@@ -1,0 +1,20 @@
+site_name: MiniFlow
+site_description: Parallel task scheduler with DAG resolution, retries and mixed workers
+repo_url: https://github.com/StutiArya2/miniflow
+theme:
+  name: material
+  features: [navigation.sections, content.code.copy]
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            docstring_style: sphinx
+nav:
+  - Home: index.md
+  - Plan: PLAN.md
+  - API:
+      - Tasks: api/task.md
+      - Graph: api/graph.md

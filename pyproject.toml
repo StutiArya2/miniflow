@@ -1,0 +1,96 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "miniflow"
+version = "0.1.0"
+description = "A parallel task scheduler with DAG resolution, retries and mixed thread, process and async workers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Megha Gautam" },
+  { name = "Stuti Arya" },
+  { name = "Jayesh Pani" },
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+# The core package is standard-library only (spec §3.1). Do not add runtime deps here.
+dependencies = []
+
+[project.optional-dependencies]
+rich = ["rich>=13"]
+viz = ["graphviz>=0.20"]
+cloudpickle = ["cloudpickle>=3"]
+
+[project.scripts]
+miniflow = "miniflow.cli:main"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pre-commit>=3.8",
+  { include-group = "test" },
+]
+test = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "pytest-timeout>=2.3",
+  "pytest-xdist>=3.6",
+  "pytest-asyncio>=0.24",
+  "hypothesis>=6.100",
+  "networkx>=3.3",
+]
+bench = [
+  "pytest-benchmark>=4",
+  "pandas>=2.2",
+  "matplotlib>=3.9",
+  "seaborn>=0.13",
+  "dask[distributed]>=2024.8",
+  "psutil>=6",
+]
+docs = [
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.26",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["miniflow"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["miniflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+timeout = 60
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["miniflow"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\."]
