@@ -22,3 +22,5 @@ The spec is `docs/MiniFlow_Project_Document.pdf`. The build plan is in `docs/PLA
 - Process-pool code must work under the **spawn** start method (Windows CI).
   Define worker functions at module level, never in tests' local scope.
 - One branch per phase or module; open a PR to `main`. CI must be green.
+- Commits and PRs belong to the team: **never add `Co-Authored-By: Claude` trailers** to
+  commit messages or "Generated with Claude Code" lines to PR descriptions.
