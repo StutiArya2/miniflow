@@ -22,3 +22,4 @@ nav:
       - Retry: api/retry.md
       - Store: api/store.md
       - Scheduler: api/scheduler.md
+      - Dashboard: api/ui.md

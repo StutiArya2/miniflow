@@ -114,6 +114,13 @@ The spec only has a CLI and a Graphviz export. A live web dashboard makes the pr
 
 **Demo script for the evaluation:** run a flow with injected failures and `--ui`. Watch the retries in the timeline and the descendants of the failed task turn grey. Kill the run, start `resume`, and watch only the unfinished tasks run.
 
+**Status: ✅ done.** Notes from building it:
+- `miniflow ui` works from a separate process while a run is live. The server polls SQLite (WAL) every 0.25 s and pushes only what changed over SSE. The browser itself never polls during a run, except to refresh the runs list every 3 s for *Follow latest*.
+- Bars for tasks still running are drawn from `task_states.updated_at` (the moment they became RUNNING) until "now". The worker name is only known when the attempt finishes.
+- Attempts that time out have no worker, so they appear in a "timed out" lane.
+- Speedup is Σ attempt time ÷ wall time, so runs that mostly wait on retry backoff can show less than ×1. That is correct, and worth explaining in the viva.
+- Checked in the browser in light and dark mode and at phone width (375 px, no horizontal page scroll).
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
