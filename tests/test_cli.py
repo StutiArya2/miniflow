@@ -179,12 +179,45 @@ def test_graph_render_svg(tmp_path):
 
 
 # --------------------------------------------------------------- kill and resume
+def _wait_for_exit(pid: int, timeout: float) -> None:
+    """Block until process ``pid`` (not necessarily our child) has exited."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if handle:  # 0 means it is already gone
+            kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+            kernel32.CloseHandle(handle)
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+
+
+def _kill_tree(proc: subprocess.Popen, real_pid: int | None) -> None:
+    # On Windows a venv's python.exe is a launcher that runs the real interpreter as a
+    # child, so kill the whole tree and wait for the process that holds the database.
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        proc.kill()
+    proc.wait(timeout=10)
+    if real_pid is not None:
+        _wait_for_exit(real_pid, timeout=10)
+
+
 def test_killed_process_resumes_without_redoing_work(tmp_path, capsys, monkeypatch):
     """Spec §3.6 Resume: kill a real run mid-way, then resume it."""
+    pid_file = tmp_path / "worker.pid"
     flow = write_flow(
         tmp_path,
         "killable",
-        """
+        f"""
         import os, time
 
         @task
@@ -194,6 +227,8 @@ def test_killed_process_resumes_without_redoing_work(tmp_path, capsys, monkeypat
         @task(after=[fast])
         def slow(x):
             if not os.environ.get("MINIFLOW_FAST"):
+                with open({str(pid_file)!r}, "w") as f:
+                    f.write(str(os.getpid()))
                 time.sleep(120)
             return x * 2
         """,
@@ -213,12 +248,17 @@ def test_killed_process_resumes_without_redoing_work(tmp_path, capsys, monkeypat
                 with StateStore(db) as store:
                     run_id = store.latest_run("killable")
                     states = store.get_states(run_id) if run_id else {}
-                if states.get("fast") is State.SUCCESS and states.get("slow") is State.RUNNING:
+                if (
+                    states.get("fast") is State.SUCCESS
+                    and states.get("slow") is State.RUNNING
+                    and pid_file.exists()
+                    and pid_file.read_text()
+                ):
                     break
             time.sleep(0.1)
     finally:
-        proc.kill()
-        proc.wait(timeout=10)
+        real_pid = int(pid_file.read_text()) if pid_file.exists() and pid_file.read_text() else None
+        _kill_tree(proc, real_pid)
 
     monkeypatch.setenv("MINIFLOW_FAST", "1")
     assert main(["resume", str(flow), "--db", str(db), "--plain"]) == 0
