@@ -328,7 +328,7 @@ def _cmd_graph(args: argparse.Namespace) -> int:
 def _render(dot: str, fmt: str, output: str | None) -> int:
     target = Path(output or f"flow.{fmt}")
     try:
-        import graphviz  # type: ignore[import-untyped]  # optional extra: miniflow[viz]
+        import graphviz  # optional extra: miniflow[viz]
 
         graphviz.Source(dot).render(outfile=str(target), format=fmt, cleanup=True)
     except ImportError:

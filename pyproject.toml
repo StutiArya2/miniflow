@@ -79,6 +79,11 @@ python_version = "3.11"
 strict = true
 packages = ["miniflow"]
 
+[[tool.mypy.overrides]]
+# Optional extra without type hints; imported lazily in cli.py.
+module = ["graphviz"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
