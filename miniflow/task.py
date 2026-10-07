@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import pickle
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias, get_args
@@ -95,28 +96,77 @@ class Task:
         return f"Task({self.name!r}, kind={self.kind!r}, after={list(self.after)!r})"
 
     def __reduce__(self) -> tuple[Any, ...]:
-        # Process workers receive tasks by reference (module + qualname) so the
-        # wrapped function is re-imported in the child rather than pickled.
-        return (_load_task, (self.fn.__module__, self.fn.__qualname__))
+        # Process workers receive tasks *by reference* (module + qualname): the
+        # function is re-imported in the child, never serialised.
+        module, qualname = self.fn.__module__, self.fn.__qualname__
+        try:
+            target = _lookup(module, qualname)
+        except (ImportError, AttributeError) as exc:
+            raise pickle.PicklingError(
+                f"task {self.name!r}: {module}.{qualname} can't be imported by a worker"
+            ) from exc
+        if target is self:  # the usual case: a @task-decorated module attribute
+            return (_load_task, (module, qualname))
+        # A task built from a module-level function under another name, e.g.
+        # task(work, name="t1", kind="cpu"): rebuild it in the child around the
+        # same imported function.
+        fields = (
+            self.name,
+            self.kind,
+            self.after,
+            self.retries,
+            self.timeout,
+            self.args,
+            dict(self.kwargs),
+        )
+        return (_rebuild_task, (module, qualname, fields))
 
 
-def _load_task(module: str, qualname: str) -> Task:
+def _lookup(module: str, qualname: str) -> Any:
     obj: Any = importlib.import_module(module)
     for part in qualname.split("."):
         obj = getattr(obj, part)
+    return obj
+
+
+def _load_task(module: str, qualname: str) -> Task:
+    obj = _lookup(module, qualname)
     if not isinstance(obj, Task):
         raise TypeError(f"{module}.{qualname} is not a MiniFlow task")
     return obj
 
 
+def _rebuild_task(module: str, qualname: str, fields: tuple[Any, ...]) -> Task:
+    obj = _lookup(module, qualname)
+    fn = obj.fn if isinstance(obj, Task) else obj
+    t = object.__new__(Task)
+    names = ("name", "kind", "after", "retries", "timeout", "args", "kwargs")
+    object.__setattr__(t, "fn", fn)
+    for name, value in zip(names, fields, strict=True):
+        object.__setattr__(t, name, value)
+    return t
+
+
 def _check_importable(t: Task) -> None:
-    """cpu tasks run in another process, so the function must be importable there."""
+    """cpu tasks run in another process (spec §3.3): check what can be checked up front.
+
+    The function must be importable by the worker, and the task's own ``args`` and
+    ``kwargs`` must be picklable. Upstream results are only known at run time; if
+    one can't be pickled, that attempt fails with the pickling error.
+    """
     qualname = getattr(t.fn, "__qualname__", "")
     if "<lambda>" in qualname or "<locals>" in qualname:
         raise TaskDefinitionError(
             f"task {t.name!r}: kind='cpu' needs a module-level function so it can be "
             f"pickled for a worker process (got {qualname!r})"
         )
+    try:
+        pickle.dumps((t.args, dict(t.kwargs)))
+    except Exception as exc:
+        raise TaskDefinitionError(
+            f"task {t.name!r}: kind='cpu' arguments must be picklable to reach a worker "
+            f"process ({type(exc).__name__}: {exc})"
+        ) from exc
 
 
 def _dep_name(dep: Dependency) -> str:

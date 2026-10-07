@@ -39,6 +39,11 @@ def add(*xs: int) -> int:
     return sum(xs)
 
 
+def cube(n: int) -> int:
+    """Plain module-level function used for many cpu tasks under different names."""
+    return n**3
+
+
 def sleep_then(seconds: float, value: object = None) -> object:
     time.sleep(seconds)
     return value

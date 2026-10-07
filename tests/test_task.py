@@ -101,3 +101,39 @@ def test_cpu_task_rejects_local_function():
 def test_cpu_task_rejects_lambda():
     with pytest.raises(TaskDefinitionError, match="module-level"):
         task(lambda: 1, kind="cpu")
+
+
+def triple(x):
+    return 3 * x
+
+
+def test_cpu_task_rejects_unpicklable_args():
+    import threading
+
+    with pytest.raises(TaskDefinitionError, match="arguments must be picklable"):
+        task(triple, kind="cpu", args=(threading.Lock(),))
+    with pytest.raises(TaskDefinitionError, match="arguments must be picklable"):
+        task(triple, kind="cpu", kwargs={"x": lambda: 1})
+
+
+def test_io_task_may_take_unpicklable_args():
+    import threading
+
+    assert task(triple, kind="io", args=(threading.Lock(),)).kind == "io"
+
+
+def test_many_cpu_tasks_from_one_plain_function_pickle():
+    tasks = [task(triple, name=f"t{i}", kind="cpu", args=(i,), retries=2) for i in range(3)]
+    for t in tasks:
+        clone = pickle.loads(pickle.dumps(t))
+        assert clone is not t
+        assert clone.fn is triple
+        assert (clone.name, clone.args, clone.retries, clone.kind) == (t.name, t.args, 2, "cpu")
+
+
+def test_renamed_copy_of_decorated_task_pickles():
+    alias = task(square.fn, name="alias", kind="cpu", args=(5,))
+    clone = pickle.loads(pickle.dumps(alias))
+    assert clone.name == "alias"
+    assert clone.fn is square.fn
+    assert clone(5) == 25

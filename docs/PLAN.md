@@ -39,7 +39,7 @@ Managed with **uv** (fast env and lockfile), in `pyproject.toml` dependency grou
 | `docs` | mkdocs-material, mkdocstrings[python] | Docs site with API reference built from docstrings, deployable to GitHub Pages |
 | extra `miniflow[rich]` | rich | Colored live progress table for `run`/`status`; falls back to plain logging |
 | extra `miniflow[viz]` | graphviz (Python package and the Graphviz binary via `winget install Graphviz`) | Renders the DAG to PNG or SVG with nodes colored by state; the stdlib-only DOT text export always works |
-| extra `miniflow[cloudpickle]` | cloudpickle | Optional: lets `cpu` tasks be lambdas or closures; default stays the stdlib pickle check from §3.3 |
+| ~~extra `miniflow[cloudpickle]`~~ | — | Dropped in Phase 4: not in the spec. Instead, cpu tasks can now be built from any module-level function under any name, which was the real need. |
 
 CI additionally runs ruff, mypy and coverage (fails below 90%) and publishes the docs site.
 
@@ -125,6 +125,12 @@ The spec only has a CLI and a Graphviz export. A live web dashboard makes the pr
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
 - Output CSVs and matplotlib plots (dev-only dependency) in `docs/results/` for the report.
+
+**Status: ✅ done.** `uv run python -m benchmarks.run` (about 2.5 min) writes CSVs, figures and `results.md` to `docs/results/`. The interpretation for the report is in `docs/evaluation.md`. Notes:
+- Bounds: the "best possible schedule" is level-by-level, ceil(level size / P) waves per level. It is tighter than min(P, work/span) and is the true optimum for fan-out and diamond shapes. For cpu tasks P = physical cores (4 on the dev laptop), not logical CPUs.
+- Dask baseline: `dask.threaded` for io and `dask.multiprocessing` (spawn pool) for cpu.
+- Every run is checked for dependency order, skip propagation and retry budgets: 440 runs, 0 violations.
+- Spec gaps closed alongside: §3.3 cpu task arguments are checked for picklability at declaration, and cpu tasks can be made from any module-level function under any name (needed for the benchmarks). The unused `cloudpickle` extra was removed.
 
 ## How cloud usage fits
 - Start each Phase 2 or 4 task at claude.ai/code. Select the `StutiArya2/miniflow` repo and an environment with **Trusted** network access and this setup script:

@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-07 22:36",
+  "python": "3.13.6",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+  "logical_cpus": 8,
+  "workers": 8,
+  "repeats": 3,
+  "task_seconds": 0.05,
+  "physical_cores": 4,
+  "dask": "2026.8.0"
+}

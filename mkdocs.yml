@@ -15,6 +15,9 @@ plugins:
 nav:
   - Home: index.md
   - Plan: PLAN.md
+  - Evaluation:
+      - Findings: evaluation.md
+      - Results: results/results.md
   - API:
       - Tasks: api/task.md
       - Graph: api/graph.md

@@ -46,7 +46,7 @@ their results, even if it ignores them.
 | `scheduler.py`  | ✅ done |
 | `cli.py`        | ✅ `run`, `resume`, `status`, `graph`, `validate` |
 | `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: live graph, timeline, runs table |
-| benchmarks      | ⏳ Phase 4 |
+| benchmarks      | ✅ `benchmarks/`: results in [`docs/results/results.md`](docs/results/results.md) |
 
 ## Running flows
 
@@ -102,6 +102,27 @@ processes are spawned and re-import your module, so cpu functions must be at mod
 **Timeouts:** a coroutine that times out is cancelled. Python can't stop a running
 thread or process, so a timed-out `io` or `cpu` task is marked failed and left to
 finish in the background. The CLI exits straight away instead of waiting for it.
+
+## Evaluation (spec §3.8)
+
+```bash
+uv run python -m benchmarks.run            # full run (a few minutes), writes docs/results/
+uv run python -m benchmarks.run --quick    # small sizes for a quick check
+```
+
+Five experiments, each written to a CSV, plus figures and a summary in
+[`docs/results/results.md`](docs/results/results.md):
+
+1. **Speedup** over sequential execution on chain, fan-out, diamond and random layered
+   DAGs (io- and cpu-bound), against the work/span bound and with Dask as a baseline.
+2. **Worker choice**: one mixed io/cpu workload run with all threads, all processes, and
+   MiniFlow's per-task routing.
+3. **Scheduler overhead** per empty task as graphs grow to 5,000 tasks (in-memory vs
+   SQLite-file store, and Dask).
+4. **Fault tolerance**: run success rate and attempts under injected failure rates, with
+   0, 1 and 3 retries, compared with the analytical expectation.
+5. **Correctness**: every run above is checked against the state store for dependency
+   order, skip propagation and retry budgets.
 
 ## Development
 

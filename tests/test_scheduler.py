@@ -392,3 +392,11 @@ def _ignore_args(fn, kind):
             fn(0.002)
 
     return wrapper
+
+
+def test_many_cpu_tasks_from_one_plain_function(router):
+    tasks = [task(F.cube, name=f"cube{i}", kind="cpu", args=(i,)) for i in range(6)]
+    tasks.append(task(F.add, name="total", after=[t.name for t in tasks]))
+    result = run(tasks, router=router)
+    assert result.ok
+    assert result["total"] == sum(i**3 for i in range(6))
