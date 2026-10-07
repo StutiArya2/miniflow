@@ -42,11 +42,336 @@ Methods
 
 from __future__ import annotations
 
-__all__ = ["StateStore"]
+import json
+import os
+import pickle
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
+
+from miniflow.states import TERMINAL, State
+
+if TYPE_CHECKING:
+    from miniflow.graph import DAG
+
+__all__ = ["AttemptRecord", "RunRecord", "StateStore", "TaskRecord"]
+
+_SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id      TEXT PRIMARY KEY,
+    flow        TEXT NOT NULL,
+    graph       TEXT NOT NULL,
+    started_at  REAL NOT NULL,
+    finished_at REAL,
+    status      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_states (
+    run_id      TEXT NOT NULL REFERENCES runs(run_id),
+    task        TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    result      BLOB,
+    error       TEXT,
+    from_cache  INTEGER NOT NULL DEFAULT 0,
+    started_at  REAL,
+    finished_at REAL,
+    updated_at  REAL NOT NULL,
+    PRIMARY KEY (run_id, task)
+);
+CREATE INDEX IF NOT EXISTS task_states_updated ON task_states(run_id, updated_at);
+CREATE TABLE IF NOT EXISTS attempts (
+    run_id      TEXT NOT NULL REFERENCES runs(run_id),
+    task        TEXT NOT NULL,
+    attempt     INTEGER NOT NULL,
+    state       TEXT NOT NULL,
+    error       TEXT,
+    worker      TEXT,
+    started_at  REAL,
+    finished_at REAL,
+    PRIMARY KEY (run_id, task, attempt)
+);
+"""
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """One row of ``runs`` (without the graph; use :meth:`StateStore.get_graph`)."""
+
+    run_id: str
+    flow: str
+    started_at: float
+    finished_at: float | None
+    status: str
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    """One row of ``task_states``. The pickled result is not loaded; see ``has_result``."""
+
+    run_id: str
+    task: str
+    state: State
+    attempts: int
+    error: str | None
+    from_cache: bool
+    started_at: float | None
+    finished_at: float | None
+    updated_at: float
+    has_result: bool
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    """One row of ``attempts``: a single execution of a task by one worker."""
+
+    run_id: str
+    task: str
+    attempt: int
+    state: State
+    error: str | None
+    worker: str | None
+    started_at: float | None
+    finished_at: float | None
 
 
 class StateStore:
-    """Placeholder until Phase 2 (module C)."""
+    """SQLite-backed store of runs, task states, attempts and pickled results."""
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError("store.py is implemented in Phase 2 (module C)")
+    def __init__(self, path: str | os.PathLike[str] = ":memory:") -> None:
+        self.path = os.fspath(path)
+        self._lock = threading.RLock()
+        self._last_ts = 0.0
+        # One connection shared by all threads; every use holds ``self._lock``.
+        # ``timeout`` covers other processes (e.g. the dashboard) holding the file.
+        self._conn = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            self._conn.commit()
+
+    # --------------------------------------------------------------- lifecycle
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def __enter__(self) -> StateStore:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def _now(self) -> float:
+        """Wall-clock time, strictly increasing per store so ``changes_since`` misses nothing."""
+        ts = max(time.time(), self._last_ts + 1e-6)
+        self._last_ts = ts
+        return ts
+
+    # ------------------------------------------------------------------ writes
+    def create_run(self, flow: str, dag: DAG) -> str:
+        """Start a new run: every task PENDING and the graph saved as JSON."""
+        run_id = uuid.uuid4().hex[:12]
+        order = dag.topological_order()
+        graph = {
+            "tasks": {
+                name: {"kind": dag.tasks[name].kind, "after": list(dag.upstream[name])}
+                for name in order
+            }
+        }
+        with self._lock, self._conn:
+            now = self._now()
+            self._conn.execute(
+                "INSERT INTO runs (run_id, flow, graph, started_at, finished_at, status)"
+                " VALUES (?, ?, ?, ?, NULL, ?)",
+                (run_id, flow, json.dumps(graph), now, "RUNNING"),
+            )
+            self._conn.executemany(
+                "INSERT INTO task_states (run_id, task, state, updated_at) VALUES (?, ?, ?, ?)",
+                [(run_id, name, State.PENDING.value, now) for name in order],
+            )
+        return run_id
+
+    def set_state(self, run_id: str, task: str, state: State, *, error: str | None = None) -> None:
+        """Move ``task`` to ``state``. ``error`` replaces the stored error when given.
+
+        RUNNING stamps ``started_at`` (first time only); terminal states stamp ``finished_at``.
+        """
+        state = State(state)
+        with self._lock, self._conn:
+            now = self._now()
+            cur = self._conn.execute(
+                "UPDATE task_states SET state = ?, error = COALESCE(?, error),"
+                " started_at = CASE WHEN ? THEN COALESCE(started_at, ?) ELSE started_at END,"
+                " finished_at = CASE WHEN ? THEN ? ELSE finished_at END,"
+                " updated_at = ? WHERE run_id = ? AND task = ?",
+                (
+                    state.value,
+                    error,
+                    state is State.RUNNING,
+                    now,
+                    state in TERMINAL,
+                    now,
+                    now,
+                    run_id,
+                    task,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no task {task!r} in run {run_id!r}")
+
+    def record_attempt(
+        self,
+        run_id: str,
+        task: str,
+        attempt: int,
+        state: State,
+        error: str | None,
+        started_at: float | None,
+        finished_at: float | None,
+        worker: str | None = None,
+    ) -> None:
+        """Log one attempt (re-recording the same attempt number replaces it)."""
+        state = State(state)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE task_states SET attempts = MAX(attempts, ?), updated_at = ?"
+                " WHERE run_id = ? AND task = ?",
+                (attempt, self._now(), run_id, task),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no task {task!r} in run {run_id!r}")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO attempts"
+                " (run_id, task, attempt, state, error, worker, started_at, finished_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, task, attempt, state.value, error, worker, started_at, finished_at),
+            )
+
+    def save_result(self, run_id: str, task: str, value: Any, *, from_cache: bool = False) -> None:
+        """Pickle ``value`` and mark the task SUCCESS."""
+        blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        with self._lock, self._conn:
+            now = self._now()
+            cur = self._conn.execute(
+                "UPDATE task_states SET state = ?, result = ?, error = NULL, from_cache = ?,"
+                " finished_at = ?, updated_at = ? WHERE run_id = ? AND task = ?",
+                (State.SUCCESS.value, blob, int(from_cache), now, now, run_id, task),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no task {task!r} in run {run_id!r}")
+
+    def finish_run(self, run_id: str, status: str) -> None:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?",
+                (status, self._now(), run_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no run {run_id!r}")
+
+    # ------------------------------------------------------------------- reads
+    def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def get_graph(self, run_id: str) -> dict[str, Any]:
+        rows = self._query("SELECT graph FROM runs WHERE run_id = ?", (run_id,))
+        if not rows:
+            raise KeyError(f"no run {run_id!r}")
+        graph: dict[str, Any] = json.loads(rows[0][0])
+        return graph
+
+    def changes_since(self, run_id: str, ts: float) -> list[TaskRecord]:
+        """Task rows of ``run_id`` with ``updated_at > ts``, oldest change first."""
+        rows = self._query(
+            "SELECT run_id, task, state, attempts, error, from_cache, started_at, finished_at,"
+            " updated_at, result IS NOT NULL FROM task_states"
+            " WHERE run_id = ? AND updated_at > ? ORDER BY updated_at, task",
+            (run_id, ts),
+        )
+        return [
+            TaskRecord(
+                run_id=r[0],
+                task=r[1],
+                state=State(r[2]),
+                attempts=r[3],
+                error=r[4],
+                from_cache=bool(r[5]),
+                started_at=r[6],
+                finished_at=r[7],
+                updated_at=r[8],
+                has_result=bool(r[9]),
+            )
+            for r in rows
+        ]
+
+    def load_completed(self, run_id: str) -> dict[str, Any]:
+        """Unpickled results of every SUCCESS task in ``run_id``."""
+        rows = self._query(
+            "SELECT task, result FROM task_states"
+            " WHERE run_id = ? AND state = ? AND result IS NOT NULL",
+            (run_id, State.SUCCESS.value),
+        )
+        return {task: pickle.loads(blob) for task, blob in rows}
+
+    def get_states(self, run_id: str) -> dict[str, State]:
+        rows = self._query(
+            "SELECT task, state FROM task_states WHERE run_id = ? ORDER BY rowid", (run_id,)
+        )
+        return {task: State(state) for task, state in rows}
+
+    def attempts(self, run_id: str, task: str | None = None) -> list[AttemptRecord]:
+        """Attempt log of a run (or one task), ordered by start time then attempt number."""
+        sql = (
+            "SELECT run_id, task, attempt, state, error, worker, started_at, finished_at"
+            " FROM attempts WHERE run_id = ?"
+        )
+        params: tuple[Any, ...] = (run_id,)
+        if task is not None:
+            sql += " AND task = ?"
+            params += (task,)
+        sql += " ORDER BY started_at, task, attempt"
+        return [
+            AttemptRecord(
+                run_id=r[0],
+                task=r[1],
+                attempt=r[2],
+                state=State(r[3]),
+                error=r[4],
+                worker=r[5],
+                started_at=r[6],
+                finished_at=r[7],
+            )
+            for r in self._query(sql, params)
+        ]
+
+    def latest_run(self, flow: str | None = None) -> str | None:
+        """Id of the most recently created run, optionally restricted to ``flow``."""
+        sql = "SELECT run_id FROM runs"
+        params: tuple[Any, ...] = ()
+        if flow is not None:
+            sql += " WHERE flow = ?"
+            params = (flow,)
+        rows = self._query(sql + " ORDER BY started_at DESC, rowid DESC LIMIT 1", params)
+        return rows[0][0] if rows else None
+
+    def list_runs(self) -> list[RunRecord]:
+        """All runs, newest first."""
+        rows = self._query(
+            "SELECT run_id, flow, started_at, finished_at, status FROM runs"
+            " ORDER BY started_at DESC, rowid DESC"
+        )
+        return [RunRecord(*r) for r in rows]
