@@ -45,8 +45,8 @@ their results, even if it ignores them.
 | `store.py`      | ✅ done |
 | `scheduler.py`  | ✅ done |
 | `cli.py`        | ✅ `run`, `resume`, `status`, `graph`, `validate` |
+| `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: live graph, timeline, runs table |
 | benchmarks      | ⏳ Phase 4 |
-| `ui/` dashboard | ⏳ Phase 3.5: live graph, timeline, runs table (`miniflow ui`) |
 
 ## Running flows
 
@@ -57,6 +57,29 @@ miniflow status --all                      # every run in miniflow.db
 miniflow resume examples/faulty_etl.py     # rerun, reusing tasks that already succeeded
 miniflow graph examples/faulty_etl.py --render svg -o flow.svg   # coloured by the latest run
 ```
+
+## Dashboard
+
+```bash
+miniflow run examples/faulty_etl.py --ui   # run with the dashboard open; it stays up until Ctrl+C
+miniflow ui                                # browse every run in miniflow.db (live, too)
+```
+
+A local web page at `http://127.0.0.1:8765` (the next free port if that one is taken), built
+only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
+
+- **Graph**: tasks laid out by dependency depth and coloured by state; the shape shows the
+  worker kind (box = io, stacked box = cpu, pill = async). Running tasks pulse and edges into
+  skipped tasks are dashed.
+- **Timeline**: one lane per worker thread, process or event loop, one bar per attempt, with
+  dotted lines for retry backoff, so the parallelism and the retries are visible.
+- **Task details**: state, attempts with the worker that ran each one, the full traceback, and
+  upstream and downstream links.
+- **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
+  and every run in the database. *Follow latest* jumps to new runs as they start.
+
+Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends).
+The server only binds to `127.0.0.1` and is read-only.
 
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`

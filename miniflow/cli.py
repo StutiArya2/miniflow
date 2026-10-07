@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import types
+import webbrowser
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TextIO
@@ -21,6 +22,7 @@ from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
 from miniflow.states import State
 from miniflow.store import StateStore
+from miniflow.ui.server import DashboardServer
 
 __all__ = ["entry", "load_flow", "main"]
 
@@ -208,9 +210,37 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 
 
 # ------------------------------------------------------------------- commands
+def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
+    server = DashboardServer(args.db, port=args.port).start()
+    print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
+    if not args.no_browser:
+        webbrowser.open(server.url)
+    return server
+
+
+def _serve_until_interrupted(server: DashboardServer) -> None:
+    print(f"dashboard running at {server.url} - press Ctrl+C to stop", file=sys.stderr, flush=True)
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+
+
 def _execute(args: argparse.Namespace, resume: bool) -> int:
     _, dag = load_flow(args.flow)
     flow = Path(args.flow).stem
+    server = _start_dashboard(args) if args.ui else None
+    try:
+        return _execute_with(args, resume, dag, flow, server)
+    finally:
+        if server is not None:
+            server.stop()
+
+
+def _execute_with(
+    args: argparse.Namespace, resume: bool, dag: DAG, flow: str, server: DashboardServer | None
+) -> int:
     with StateStore(args.db) as store:
         previous = None
         if resume:
@@ -244,6 +274,8 @@ def _execute(args: argparse.Namespace, resume: bool) -> int:
             print("note: timed-out tasks were abandoned while still running", file=sys.stderr)
     if not args.quiet:
         _summary(result)
+    if server is not None and args.ui_wait:
+        _serve_until_interrupted(server)
     return {"SUCCESS": 0, "FAILED": 1}.get(result.status, 130)
 
 
@@ -344,6 +376,20 @@ def _render(dot: str, fmt: str, output: str | None) -> int:
     return 0
 
 
+def _cmd_ui(args: argparse.Namespace) -> int:
+    if not Path(args.db).exists():
+        print(
+            f"note: {args.db} doesn't exist yet; runs will appear once you start one",
+            file=sys.stderr,
+        )
+    server = _start_dashboard(args)
+    try:
+        _serve_until_interrupted(server)
+    finally:
+        server.stop()
+    return 0
+
+
 def _cmd_validate(args: argparse.Namespace) -> int:
     _, dag = load_flow(args.flow)
     order = dag.topological_order()
@@ -375,6 +421,20 @@ def build_parser() -> argparse.ArgumentParser:
             "-v", "--verbose", action="store_true", help="also show PENDING/READY changes"
         )
         p.add_argument("-q", "--quiet", action="store_true", help="no progress output")
+        p.add_argument("--ui", action="store_true", help="serve the live dashboard during the run")
+        p.add_argument(
+            "--ui-wait",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="with --ui, keep the dashboard up after the run until Ctrl+C",
+        )
+        dashboard_options(p)
+
+    def dashboard_options(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--port", type=int, default=8765, help="dashboard port (next free one if taken)"
+        )
+        p.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
 
     r = sub.add_parser("run", help="run a flow")
     run_options(r)
@@ -399,6 +459,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--run", help="run id for colours (default: latest run of this flow)")
     g.add_argument("--render", choices=["png", "svg", "pdf"], help="render an image with Graphviz")
     g.set_defaults(func=_cmd_graph)
+
+    u = sub.add_parser("ui", help="serve the dashboard for a state database")
+    u.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    dashboard_options(u)
+    u.set_defaults(func=_cmd_ui)
 
     v = sub.add_parser("validate", help="check the DAG and print a topological order")
     v.add_argument("flow")
