@@ -92,9 +92,10 @@ class Deadline:
 
     def remaining(self) -> float | None:
         """Seconds left (never negative), or ``None`` when unbounded."""
-        if self._end is None:
+        if self._end is None or self.seconds is None:
             return None
-        return max(0.0, self._end - time.monotonic())
+        # Clamp to the budget: float rounding in ``(start + s) - now`` can exceed ``s``.
+        return max(0.0, min(self.seconds, self._end - time.monotonic()))
 
     def expired(self) -> bool:
         """True once the deadline has passed."""

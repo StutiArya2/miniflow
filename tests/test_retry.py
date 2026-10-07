@@ -133,3 +133,11 @@ def test_zero_deadline_is_already_expired():
 
 def test_deadline_repr():
     assert repr(Deadline(None)) == "Deadline(seconds=None, remaining=None)"
+
+
+def test_remaining_never_exceeds_budget_or_goes_negative():
+    for seconds in (0.05, 1e-9, 0.0, -1.0):
+        with deadline(seconds) as d:
+            remaining = d.remaining()
+            assert remaining is not None
+            assert 0.0 <= remaining <= max(seconds, 0.0)
