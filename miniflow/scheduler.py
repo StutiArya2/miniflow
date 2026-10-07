@@ -1,15 +1,465 @@
-"""Event-driven scheduler (spec §3.4, §3.6 "Scheduling loop"). Implemented in Phase 3.
+"""Event-driven scheduler (spec §3.4, §3.6 "Scheduling loop").
 
-Planned API::
+The loop keeps, for every task, a counter of upstream tasks that have not yet
+succeeded. A task whose counter reaches zero becomes READY and joins a
+per-kind ``heapq`` ready queue keyed by its critical-path length (HEFT-style
+rank, :meth:`miniflow.graph.DAG.critical_path_lengths`), so tasks that gate
+the most remaining work start first. Tasks are dispatched while their worker
+kind has free capacity, and the loop blocks in
+``concurrent.futures.wait(..., return_when=FIRST_COMPLETED)``; there is no
+polling. The wait is bounded only by the nearest retry or timeout deadline.
 
-    Scheduler(dag, *, router=None, store=None, policy=None).run(run_id=None) -> RunResult
-    run(dag_or_tasks, **options) -> RunResult        # convenience wrapper
+Failures go through :class:`miniflow.retry.RetryPolicy`. A failed attempt
+with budget left becomes RETRYING and re-enters the ready queue after its
+backoff. A task whose attempts are exhausted becomes FAILED and every
+descendant is marked SKIPPED (breadth-first, :meth:`DAG.descendants`), so a
+run always terminates.
 
-The loop keeps an unfinished-upstream counter per task, a ``heapq`` ready queue
-keyed by ``-critical_path_length``, waits with
-``concurrent.futures.wait(..., return_when=FIRST_COMPLETED)``, applies the
-:data:`miniflow.states.TRANSITIONS` table, and marks every descendant of a
-permanently failed task SKIPPED via :meth:`miniflow.graph.DAG.descendants`.
+Every transition is checked against :data:`miniflow.states.TRANSITIONS` and
+written to the :class:`miniflow.store.StateStore`. ``run(resume_from=...)``
+starts a new run that reuses the stored results of tasks that succeeded in an
+earlier run (marked ``from_cache``) and executes only the rest.
+
+Timeouts: a task that exceeds ``timeout`` is failed with
+:class:`miniflow.retry.TaskTimeoutError` and its future is cancelled.
+Coroutines are cancelled for real. Python cannot stop a running thread or a
+busy pool process, so those are abandoned: their eventual result is ignored.
 """
 
 from __future__ import annotations
+
+import heapq
+import itertools
+import logging
+import os
+import pickle
+import random
+import time
+import traceback
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, wait
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
+from typing import Any
+
+from miniflow.executors import ExecutorRouter, Outcome, TaskError
+from miniflow.graph import DAG
+from miniflow.retry import RetryPolicy, TaskTimeoutError
+from miniflow.states import TERMINAL, TRANSITIONS, State
+from miniflow.store import StateStore
+from miniflow.task import KINDS, Kind, Task
+
+__all__ = ["Event", "RunResult", "Scheduler", "run"]
+
+log = logging.getLogger("miniflow")
+
+Listener = Callable[["Event"], None]
+
+
+@dataclass(frozen=True)
+class Event:
+    """One state change, delivered to listeners (CLI progress, logging, tests)."""
+
+    run_id: str
+    task: str
+    state: State
+    attempt: int
+    time: float
+    worker: str | None = None
+    error: str | None = None
+    delay: float | None = None  # RETRYING only: seconds until the next attempt
+    from_cache: bool = False
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """Final state of a run. ``status`` is ``SUCCESS``, ``FAILED`` or ``INTERRUPTED``."""
+
+    run_id: str
+    status: str
+    states: Mapping[str, State]
+    results: Mapping[str, Any]
+    errors: Mapping[str, str]
+    attempts: Mapping[str, int]
+    from_cache: frozenset[str]
+    started_at: float
+    finished_at: float
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "SUCCESS"
+
+    @property
+    def duration(self) -> float:
+        return self.finished_at - self.started_at
+
+    def __getitem__(self, task: str) -> Any:
+        return self.results[task]
+
+
+@dataclass
+class _Attempt:
+    task: Task
+    attempt: int
+    started_wall: float
+    deadline: float | None  # time.monotonic() value
+    pool_generation: int
+
+
+def _short(exc: BaseException) -> str:
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _describe(exc: BaseException) -> str:
+    """Full traceback when the exception still has one (threads, coroutines)."""
+    if exc.__traceback__ is not None:
+        return "".join(traceback.format_exception(exc)).rstrip()
+    return _short(exc)
+
+
+class Scheduler:
+    """Runs one DAG. Create a new :class:`Scheduler` (or call :meth:`run` again) per run.
+
+    :param router: worker pools to use. When omitted the scheduler creates one
+        and shuts it down at the end of each run.
+    :param store: where states are persisted. Defaults to an in-memory store.
+    :param policy: backoff between attempts. Each task's ``retries`` sets how many.
+    :param flow: name recorded for the run (the CLI uses the flow file name).
+    :param async_limit: maximum coroutines in flight at once.
+    :param weight: estimated cost of a task for critical-path ranking (default 1).
+    :param listeners: callables receiving every :class:`Event`.
+    :param rng: random source for backoff jitter (seed it for reproducible tests).
+    """
+
+    def __init__(
+        self,
+        dag: DAG,
+        *,
+        router: ExecutorRouter | None = None,
+        store: StateStore | None = None,
+        policy: RetryPolicy | None = None,
+        flow: str = "flow",
+        async_limit: int = 1000,
+        weight: Callable[[Task], float] | None = None,
+        listeners: Iterable[Listener] = (),
+        rng: random.Random | None = None,
+    ) -> None:
+        if async_limit < 1:
+            raise ValueError("async_limit must be >= 1")
+        self.dag = dag
+        self.store = store if store is not None else StateStore()
+        self.policy = policy or RetryPolicy()
+        self.flow = flow
+        self.listeners = list(listeners)
+        self._router_arg = router
+        self._async_limit = async_limit
+        self._rank = dag.critical_path_lengths(weight)
+        self._rng = rng
+
+    # ------------------------------------------------------------------ public
+    def run(self, resume_from: str | None = None) -> RunResult:
+        """Execute the DAG and return its :class:`RunResult`.
+
+        :param resume_from: id of an earlier run of the same flow; its successful
+            results are reused and only the remaining tasks are executed.
+        """
+        owned = self._router_arg is None
+        self.router = self._router_arg or ExecutorRouter()
+        self._reset()
+        self.run_id = self.store.create_run(self.flow, self.dag)
+        status = "SUCCESS"
+        try:
+            if resume_from is not None:
+                self._load_cache(resume_from)
+            for name in self.dag.topological_order():
+                if self.state[name] is State.PENDING and self.waiting[name] == 0:
+                    self._make_ready(name)
+            self._loop()
+        except KeyboardInterrupt:
+            status = "INTERRUPTED"
+            for fut in self.running:
+                fut.cancel()
+            self._abandoned = True
+            log.warning("run %s interrupted; resume with --run %s", self.run_id, self.run_id)
+        finally:
+            if owned:
+                if self._abandoned:
+                    self.router.shutdown(wait=False, cancel_futures=True)
+                else:
+                    self.router.shutdown()
+
+        if status == "SUCCESS":
+            assert all(s in TERMINAL for s in self.state.values()), self.state
+            if any(s is not State.SUCCESS for s in self.state.values()):
+                status = "FAILED"
+        self.store.finish_run(self.run_id, status)
+        return RunResult(
+            run_id=self.run_id,
+            status=status,
+            states=dict(self.state),
+            results=dict(self.results),
+            errors=dict(self.errors),
+            attempts=dict(self.attempts),
+            from_cache=frozenset(self.cached),
+            started_at=self._started_at,
+            finished_at=time.time(),
+        )
+
+    @property
+    def abandoned_work(self) -> bool:
+        """True if the last run left timed-out threads or processes still running."""
+        return getattr(self, "_abandoned", False)
+
+    # ------------------------------------------------------------------- setup
+    def _reset(self) -> None:
+        dag = self.dag
+        self.state: dict[str, State] = dict.fromkeys(dag.tasks, State.PENDING)
+        self.waiting: dict[str, int] = {n: len(ups) for n, ups in dag.upstream.items()}
+        self.results: dict[str, Any] = {}
+        self.errors: dict[str, str] = {}
+        self.attempts: dict[str, int] = dict.fromkeys(dag.tasks, 0)
+        self.cached: set[str] = set()
+        self.ready: dict[Kind, list[tuple[float, int, str]]] = {k: [] for k in KINDS}
+        self.delayed: list[tuple[float, int, str]] = []
+        self.running: dict[Future[Outcome], _Attempt] = {}
+        self.in_use: dict[Kind, int] = dict.fromkeys(KINDS, 0)
+        self.capacity: dict[Kind, int] = {
+            "io": self.router.io_workers,
+            "cpu": self.router.cpu_workers or os.cpu_count() or 1,
+            "async": self._async_limit,
+        }
+        self._seq = itertools.count()
+        self._pool_generation = 0
+        self._abandoned = False
+        self._started_at = time.time()
+
+    def _load_cache(self, previous_run: str) -> None:
+        prior = self.store.load_completed(previous_run)
+        for name in self.dag.topological_order():
+            # Reuse a result only if everything it was computed from was reused too.
+            if name in prior and all(u in self.cached for u in self.dag.upstream[name]):
+                self.cached.add(name)
+                self.results[name] = prior[name]
+                self.store.save_result(self.run_id, name, prior[name], from_cache=True)
+                # PENDING -> SUCCESS without running is only legal here, so bypass _set.
+                self.state[name] = State.SUCCESS
+                self._emit(name, State.SUCCESS, from_cache=True)
+                for child in self.dag.downstream[name]:
+                    self.waiting[child] -= 1
+
+    # -------------------------------------------------------------------- loop
+    def _loop(self) -> None:
+        while True:
+            now = time.monotonic()
+            while self.delayed and self.delayed[0][0] <= now:
+                _, _, name = heapq.heappop(self.delayed)
+                self._make_ready(name)
+            self._dispatch()
+            if not self.running and not self.delayed:
+                return
+            timeout = self._next_wakeup()
+            if self.running:
+                done, _ = wait(list(self.running), timeout=timeout, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    self._complete(fut)
+            elif timeout:
+                time.sleep(timeout)
+            self._expire_timeouts()
+
+    def _next_wakeup(self) -> float | None:
+        times = [d for d, _, _ in self.delayed[:1]]
+        times += [a.deadline for a in self.running.values() if a.deadline is not None]
+        if not times:
+            return None
+        return max(0.0, min(times) - time.monotonic())
+
+    def _dispatch(self) -> None:
+        for kind in KINDS:
+            heap = self.ready[kind]
+            while heap and self.in_use[kind] < self.capacity[kind]:
+                _, _, name = heapq.heappop(heap)
+                self._start(self.dag.tasks[name])
+
+    def _start(self, task: Task) -> None:
+        name = task.name
+        self.attempts[name] += 1
+        attempt = self.attempts[name]
+        args = tuple(self.results[u] for u in task.after) + task.args
+        self._set(name, State.RUNNING, attempt=attempt)
+        try:
+            fut = self.router.submit(task, args, dict(task.kwargs))
+        except BrokenProcessPool:
+            self._restart_pool(self._pool_generation)
+            fut = self.router.submit(task, args, dict(task.kwargs))
+        self.in_use[task.kind] += 1
+        deadline = time.monotonic() + task.timeout if task.timeout is not None else None
+        self.running[fut] = _Attempt(task, attempt, time.time(), deadline, self._pool_generation)
+
+    def _complete(self, fut: Future[Outcome]) -> None:
+        att = self.running.pop(fut, None)
+        if att is None:  # already timed out and abandoned
+            return
+        self.in_use[att.task.kind] -= 1
+        try:
+            outcome = fut.result()
+        except TaskError as err:
+            self._failed(att, err.original, err.worker, err.started_at, err.finished_at)
+        except BrokenProcessPool as err:
+            self._restart_pool(att.pool_generation)
+            self._failed(att, err, None, att.started_wall, time.time())
+        except Exception as err:  # e.g. arguments that could not be pickled
+            self._failed(att, err, None, att.started_wall, time.time())
+        else:
+            self._succeeded(att, outcome)
+
+    def _expire_timeouts(self) -> None:
+        now = time.monotonic()
+        for fut, att in list(self.running.items()):
+            if att.deadline is None or now < att.deadline or fut.done():
+                continue
+            del self.running[fut]
+            self.in_use[att.task.kind] -= 1
+            fut.cancel()
+            if att.task.kind != "async":
+                self._abandoned = True  # threads and processes can't be interrupted
+            err = TaskTimeoutError(
+                f"task {att.task.name!r} exceeded its timeout of {att.task.timeout}s"
+            )
+            self._failed(att, err, None, att.started_wall, time.time())
+
+    def _restart_pool(self, generation: int) -> None:
+        # Every in-flight cpu future of a broken pool fails; restart only once per pool.
+        if generation == self._pool_generation:
+            log.warning("a worker process died; restarting the process pool")
+            self.router.restart_cpu_pool()
+            self._pool_generation += 1
+
+    # ---------------------------------------------------------------- outcomes
+    def _succeeded(self, att: _Attempt, outcome: Outcome) -> None:
+        name = att.task.name
+        self.results[name] = outcome.value
+        self.errors.pop(name, None)
+        self.store.record_attempt(
+            self.run_id,
+            name,
+            att.attempt,
+            State.SUCCESS,
+            None,
+            outcome.started_at,
+            outcome.finished_at,
+            outcome.worker,
+        )
+        try:
+            self.store.save_result(self.run_id, name, outcome.value)  # also marks SUCCESS
+            write_state = False
+        except (pickle.PicklingError, TypeError, AttributeError) as exc:
+            log.warning("result of %r can't be pickled (%s); it will rerun on resume", name, exc)
+            write_state = True
+        self._set(
+            name, State.SUCCESS, attempt=att.attempt, worker=outcome.worker, persist=write_state
+        )
+        for child in self.dag.downstream[name]:
+            self.waiting[child] -= 1
+            if self.waiting[child] == 0 and self.state[child] is State.PENDING:
+                self._make_ready(child)
+
+    def _failed(
+        self,
+        att: _Attempt,
+        exc: BaseException,
+        worker: str | None,
+        started_at: float,
+        finished_at: float,
+    ) -> None:
+        task, name = att.task, att.task.name
+        short, full = _short(exc), _describe(exc)
+        self.errors[name] = short
+        self.store.record_attempt(
+            self.run_id, name, att.attempt, State.FAILED, full, started_at, finished_at, worker
+        )
+        if self.policy.should_retry(task, att.attempt):
+            delay = self.policy.delay(att.attempt, self._rng)
+            self._set(
+                name,
+                State.RETRYING,
+                attempt=att.attempt,
+                worker=worker,
+                error=short,
+                stored_error=full,
+                delay=delay,
+            )
+            heapq.heappush(self.delayed, (time.monotonic() + delay, next(self._seq), name))
+            return
+        self._set(
+            name, State.FAILED, attempt=att.attempt, worker=worker, error=short, stored_error=full
+        )
+        reason = f"upstream task {name!r} failed"
+        for desc in self.dag.descendants(name):
+            if self.state[desc] is State.PENDING:
+                self.errors[desc] = reason
+                self._set(desc, State.SKIPPED, attempt=0, error=reason)
+
+    # ----------------------------------------------------------------- helpers
+    def _make_ready(self, name: str) -> None:
+        self._set(name, State.READY, attempt=self.attempts[name])
+        task = self.dag.tasks[name]
+        heapq.heappush(self.ready[task.kind], (-self._rank[name], next(self._seq), name))
+
+    def _set(
+        self,
+        name: str,
+        new: State,
+        *,
+        attempt: int,
+        worker: str | None = None,
+        error: str | None = None,
+        stored_error: str | None = None,
+        delay: float | None = None,
+        persist: bool = True,
+    ) -> None:
+        old = self.state[name]
+        if new not in TRANSITIONS[old]:
+            raise AssertionError(f"illegal transition for {name!r}: {old} -> {new}")
+        self.state[name] = new
+        if persist:
+            self.store.set_state(self.run_id, name, new, error=stored_error or error)
+        log.debug("%s: %s -> %s (attempt %d)", name, old, new, attempt)
+        self._emit(name, new, attempt=attempt, worker=worker, error=error, delay=delay)
+
+    def _emit(
+        self,
+        name: str,
+        state: State,
+        *,
+        attempt: int = 0,
+        worker: str | None = None,
+        error: str | None = None,
+        delay: float | None = None,
+        from_cache: bool = False,
+    ) -> None:
+        if not self.listeners:
+            return
+        event = Event(
+            self.run_id, name, state, attempt, time.time(), worker, error, delay, from_cache
+        )
+        for listener in self.listeners:
+            try:
+                listener(event)
+            except Exception:
+                log.exception("event listener %r failed", listener)
+
+
+def run(
+    tasks: DAG | Iterable[Task],
+    *,
+    resume_from: str | None = None,
+    **options: Any,
+) -> RunResult:
+    """Validate ``tasks`` into a DAG and run it. ``options`` go to :class:`Scheduler`."""
+    dag = tasks if isinstance(tasks, DAG) else DAG.from_tasks(tasks)
+    if options.get("store") is not None:
+        return Scheduler(dag, **options).run(resume_from=resume_from)
+    # Nobody else can reach a store created here, so close it when the run ends.
+    with StateStore() as store:
+        return Scheduler(dag, store=store, **options).run(resume_from=resume_from)

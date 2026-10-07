@@ -1,3 +1,3 @@
-from miniflow.cli import main
+from miniflow.cli import entry
 
-raise SystemExit(main())
+entry()

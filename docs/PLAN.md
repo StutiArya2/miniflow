@@ -68,6 +68,16 @@ All three only depend on Phase 1, so they run at the same time. I review each PR
 - `cli.py`: `run`, `resume`, `status`, and `graph` (DOT export).
 - Integration and fault-injection tests: random failures, timeouts, slow tasks, killing a run and resuming it, and checking from the store that execution order always respects dependencies.
 
+**Status: ✅ done.** Decisions made while building it:
+- **Resume creates a new run.** It reuses the stored results of SUCCESS tasks from the earlier run (`from_cache=True`), so both runs stay in the history. A result is reused only if all its upstream results were reused too.
+- **Ready queues are per worker kind and limited to pool capacity.** Critical-path priority only works if the scheduler, not the pool's FIFO queue, picks the next task.
+- **Timeouts:** coroutines are cancelled. Threads and processes can't be stopped, so the task is marked failed and the work is abandoned. The CLI then exits straight away (`cli.entry`) instead of waiting for it.
+- **A crashed worker process** (`BrokenProcessPool`) counts as a failed attempt and `ExecutorRouter.restart_cpu_pool()` replaces the pool, once per broken pool.
+- **Process pools default to `spawn` on every platform.** Forking while io and async threads exist can deadlock.
+- **Results that can't be pickled** still flow to downstream tasks, but aren't stored, so they rerun on resume.
+- Ctrl+C gives an `INTERRUPTED` run that can be resumed. Exit codes: 0 success, 1 failed, 130 interrupted.
+- Demo flow with injected faults: `examples/faulty_etl.py`.
+
 ### Phase 3.5: dashboard (`miniflow ui`)
 The spec only has a CLI and a Graphviz export. A live web dashboard makes the project much easier to demo and to explain in the viva. It is **still standard-library only**: no web framework, no npm, no CDN, and it works offline.
 
