@@ -18,3 +18,4 @@ nav:
   - API:
       - Tasks: api/task.md
       - Graph: api/graph.md
+      - Executors: api/executors.md
