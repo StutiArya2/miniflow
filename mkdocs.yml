@@ -19,3 +19,6 @@ nav:
       - Tasks: api/task.md
       - Graph: api/graph.md
       - Executors: api/executors.md
+      - Retry: api/retry.md
+      - Store: api/store.md
+      - Scheduler: api/scheduler.md

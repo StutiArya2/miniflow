@@ -30,7 +30,7 @@ viz = ["graphviz>=0.20"]
 cloudpickle = ["cloudpickle>=3"]
 
 [project.scripts]
-miniflow = "miniflow.cli:main"
+miniflow = "miniflow.cli:entry"
 
 [dependency-groups]
 dev = [

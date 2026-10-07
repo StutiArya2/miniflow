@@ -8,7 +8,8 @@ Contract (Phase 2, module A)
     running in a background daemon thread (kind ``"async"``). Pools are created
     lazily on first use. Usable as a context manager; ``__exit__`` calls
     :meth:`shutdown`. ``mp_context`` (e.g. ``multiprocessing.get_context("spawn")``)
-    is passed to the process pool; ``None`` uses the platform default.
+    is passed to the process pool. ``None`` means ``spawn`` on every platform: forking
+    once the io/async threads exist can deadlock, and spawn matches Windows behaviour.
 
 ``submit(task: Task, args: tuple, kwargs: dict) -> concurrent.futures.Future[Outcome]``
     Dispatches through a table keyed by ``task.kind``. For ``"cpu"`` the
@@ -33,11 +34,16 @@ Contract (Phase 2, module A)
     Stops all pools and the event loop thread. Idempotent. Coroutines still
     pending when the loop stops are cancelled; with ``wait=True`` they are first
     allowed to finish unless ``cancel_futures`` is set.
+
+``restart_cpu_pool() -> None``
+    Drops a broken process pool so the next cpu submission creates a fresh one.
+    Used by the scheduler after a worker process dies (Phase 3).
 """
 
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import pickle
 import threading
@@ -246,6 +252,16 @@ class ExecutorRouter:
         if processes is not None:
             processes.shutdown(wait=wait, cancel_futures=cancel_futures)
 
+    def restart_cpu_pool(self) -> None:
+        """Discard the process pool (e.g. after ``BrokenProcessPool``).
+
+        The next cpu task starts a fresh pool.
+        """
+        with self._lock:
+            old, self._processes = self._processes, None
+        if old is not None:
+            old.shutdown(wait=False, cancel_futures=True)
+
     # -- per-kind submitters ---------------------------------------------------
 
     def _submit_io(
@@ -265,7 +281,8 @@ class ExecutorRouter:
         with self._lock:
             self._check_open()
             if self._processes is None:
-                self._processes = ProcessPoolExecutor(self.cpu_workers, mp_context=self._mp_context)
+                ctx = self._mp_context or multiprocessing.get_context("spawn")
+                self._processes = ProcessPoolExecutor(self.cpu_workers, mp_context=ctx)
             inner = self._processes.submit(_run_in_process, task, args, kwargs)
         outer: Future[Outcome] = Future()
         outer.add_done_callback(lambda f: inner.cancel() if f.cancelled() else None)
