@@ -44,6 +44,7 @@ followed by its own `args`/`kwargs`.
 | `store.py`      | ⏳ Phase 2 |
 | `scheduler.py`  | ⏳ Phase 3 |
 | `cli.py`        | 🟡 `validate`, `graph` done; `run`, `resume`, `status` in Phase 3 |
+| `ui/` dashboard | ⏳ Phase 3.5: live graph, timeline, runs table (`miniflow ui`) |
 
 ## Development
 

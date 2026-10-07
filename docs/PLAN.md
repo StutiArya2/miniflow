@@ -17,6 +17,7 @@ Decisions: a **private repo with teammates as collaborators**, and **Claude buil
 miniflow/            # package
   __init__.py  task.py  graph.py  executors.py  retry.py
   store.py  scheduler.py  cli.py  __main__.py
+  ui/                # dashboard (Phase 3.5): server.py, layout.py, static/{index.html, app.js, style.css}
 tests/               # pytest, one file per module + fault-injection + integration
 benchmarks/          # synthetic DAGs (chain, fan-out, diamond, random layered), runners, plots
 examples/            # demo pipeline from §3.3 of the doc
@@ -67,6 +68,42 @@ All three only depend on Phase 1, so they run at the same time. I review each PR
 - `cli.py`: `run`, `resume`, `status`, and `graph` (DOT export).
 - Integration and fault-injection tests: random failures, timeouts, slow tasks, killing a run and resuming it, and checking from the store that execution order always respects dependencies.
 
+### Phase 3.5: dashboard (`miniflow ui`)
+The spec only has a CLI and a Graphviz export. A live web dashboard makes the project much easier to demo and to explain in the viva. It is **still standard-library only**: no web framework, no npm, no CDN, and it works offline.
+
+**Backend: `miniflow/ui/server.py`**
+- `http.server.ThreadingHTTPServer` with a small router. It reads only from the SQLite `StateStore`, so it works during a run and after one.
+- Endpoints:
+  - `GET /api/runs`: list of runs (flow, status, start and end times, counts per state)
+  - `GET /api/runs/<id>`: graph (tasks, kinds, edges, layout coordinates), the current state of every task, and the attempt log
+  - `GET /api/runs/<id>/events`: Server-Sent Events stream that pushes state changes, so the page updates live without polling. Falls back to polling every second.
+  - `GET /`: the static page, served from package data via `importlib.resources`
+- Binds to `127.0.0.1` only. Read-only, so a demo can't change runs.
+
+**Layout: `miniflow/ui/layout.py`**
+- Layered DAG layout computed in Python from `DAG.topological_order()`: each task's column is the length of its longest path from a root. Rows within a column are ordered with a barycenter pass to reduce edge crossings.
+- Returns x and y for each node so the browser only draws SVG. No JavaScript graph library is needed.
+
+**Frontend: `miniflow/ui/static/`** (one page, vanilla JS and SVG, light and dark themes)
+1. **Graph view.** Nodes are colored by state, using the same colors as `DAG.to_dot`. The shape shows the worker kind (box for io, 3D box for cpu, pill for async). Running tasks pulse, and edges into SKIPPED tasks are dashed. Clicking a node opens its details.
+2. **Timeline (Gantt).** One lane per worker (thread, process PID, event loop) and one bar per attempt, so parallelism, retries and backoff gaps are visible at a glance. Failed attempts are red.
+3. **Runs table.** All runs with status, duration and success/failed/skipped counts. Clicking a run loads it.
+4. **Task details.** State, attempts, errors with tracebacks, durations, upstream and downstream tasks, and whether the result was loaded from the store on resume.
+5. **Summary bar.** Progress, elapsed time, an estimate of the speedup over sequential execution (sum of task durations ÷ wall time), and tasks per worker kind.
+
+**CLI**
+- `miniflow ui [--db PATH] [--port 8765]` starts the dashboard and opens the browser.
+- `miniflow run flow.py --ui` runs the flow with the dashboard running alongside it.
+
+**What this needs from earlier phases (already in the Phase 2 contracts)**
+- The store saves the DAG as JSON on each run (`runs.graph`), so the dashboard can draw a run without the flow file.
+- Each attempt records which `worker` ran it, for the timeline lanes.
+- Executor futures resolve to `Outcome(value, worker, started_at, finished_at)`, so timeline bars show the actual run time, not time spent waiting in the queue.
+
+**Tests:** layout properties (every edge points to a later column; nodes don't overlap), the API's JSON shape against a store filled with test data, SSE delivering a state change, and one end-to-end check: run the example flow with `--ui`, read `/api/runs/<id>` and confirm every task is SUCCESS.
+
+**Demo script for the evaluation:** run a flow with injected failures and `--ui`. Watch the retries in the timeline and the descendants of the failed task turn grey. Kill the run, start `resume`, and watch only the unfinished tasks run.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
@@ -87,4 +124,5 @@ All three only depend on Phase 1, so they run at the same time. I review each PR
 - `pytest -q` passes locally on Windows and in CI on Ubuntu and Windows.
 - `python -m miniflow run examples/pipeline.py` shows the io, cpu and async routing.
 - Fault test: interrupting a run and running `resume` re-executes only the unfinished tasks.
+- `miniflow run examples/pipeline.py --ui` opens the dashboard, which shows the graph filling in live and one timeline lane per worker.
 - Benchmarks produce speedup and overhead plots.

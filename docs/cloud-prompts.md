@@ -18,7 +18,9 @@ The three sessions are independent and can run at the same time.
 > contract in its module docstring. Use a dispatch table keyed by
 > `task.kind`. Pools are created lazily. The async loop runs in a daemon
 > thread, and coroutines go through `asyncio.run_coroutine_threadsafe`.
-> `shutdown()` is idempotent and stops the loop thread. Write
+> `shutdown()` is idempotent and stops the loop thread. Futures resolve to
+> `Outcome` and failures raise `TaskError`, both carrying the worker name and
+> timing that the dashboard timeline needs. Write
 > `tests/test_executors.py`, covering: results from all three kinds, exceptions
 > propagated through the Future, cpu tasks actually running in another PID,
 > many concurrent io and async tasks, shutdown twice, use as a context manager,
@@ -41,9 +43,12 @@ The three sessions are independent and can run at the same time.
 
 > Read CLAUDE.md, then implement `miniflow/store.py` exactly to the contract
 > in its module docstring: SQLite in WAL mode, one connection guarded by a
-> lock, results pickled, and dataclasses for `AttemptRecord` and `RunRecord`.
-> Use the `State` enum from `miniflow/states.py`. Write `tests/test_store.py`,
-> covering: run creation, state updates, an attempts log, a save/load_completed
-> round trip, latest_run, reopening a file database (resume after a restart),
-> concurrent writes from 8 threads, and `:memory:`. ruff, mypy and pytest
+> lock, results pickled, and dataclasses for `AttemptRecord`, `RunRecord` and
+> `TaskRecord`. Use the `State` enum from `miniflow/states.py`. The dashboard
+> (Phase 3.5, see docs/PLAN.md) depends on `runs.graph`, `attempts.worker`,
+> `from_cache`, `get_graph` and `changes_since`, so implement them as well.
+> Write `tests/test_store.py`, covering: run creation, saving the graph JSON from a
+> DAG, state updates, an attempts log with worker names, a save/load_completed
+> round trip, changes_since, latest_run, reopening a file database (resume after
+> a restart), concurrent writes from 8 threads, and `:memory:`. ruff, mypy and pytest
 > must pass. Work on branch `phase2/store` and open a PR to main.
