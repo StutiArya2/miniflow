@@ -45,7 +45,8 @@ their results, even if it ignores them.
 | `store.py`      | ✅ done |
 | `scheduler.py`  | ✅ done |
 | `cli.py`        | ✅ `run`, `resume`, `status`, `graph`, `validate` |
-| `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: live graph, timeline, runs table |
+| `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: Examples gallery, story, results, live graph, timeline |
+| `examples/`     | ✅ four real-world pipelines on live public data, with offline snapshots |
 | benchmarks      | ✅ `benchmarks/`: results in [`docs/results/results.md`](docs/results/results.md) |
 
 ## Running flows
@@ -97,10 +98,22 @@ miniflow ui --flows examples              # JSON flows appear next to the Python
 ## Dashboard
 
 ```bash
+miniflow ui                                # open the dashboard: Examples gallery + every run
 miniflow run examples/faulty_etl.py --ui   # run with the dashboard open; it stays up until Ctrl+C
 miniflow ui                                # browse every run in miniflow.db (live, too)
 miniflow ui --flows examples               # ...and start, cancel and resume runs from the page
 ```
+
+Made for people who have never seen a workflow engine:
+
+- **Examples gallery**: one card per real-world example with a plain-English description and a
+  **Run** button. Runs started there appear live.
+- **Story**: what the pipeline is for, what to watch for while it runs, and a short
+  "How to read this page" guide.
+- **What this run found**: the results of the pipeline's key steps in plain words, for example the
+  city ranking, the alerts sent or revenue by country.
+- **Step details**: what each step does, what it produced, every attempt and, for a failure, the
+  reason in one line (the Python traceback is folded away).
 
 A local web page at `http://127.0.0.1:8765` (the next free port if that one is taken), built
 only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:

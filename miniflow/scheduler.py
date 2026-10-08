@@ -10,7 +10,9 @@ kind has free capacity, and the loop blocks in
 polling. The wait is bounded only by the nearest retry or timeout deadline, and
 on Windows by a short limit, since Ctrl+C can't interrupt a blocked wait there.
 
-Failures go through :class:`miniflow.retry.RetryPolicy`. A failed attempt
+Failures go through :class:`miniflow.retry.RetryPolicy`. A task declared with
+``optional=True`` that fails for good does not skip anything: the tasks after it run
+and receive ``None`` in its place (like a trigger rule in larger workflow engines). A failed attempt
 with budget left becomes RETRYING and re-enters the ready queue after its
 backoff. A task whose attempts are exhausted becomes FAILED and every
 descendant is marked SKIPPED (breadth-first, :meth:`DAG.descendants`), so a
@@ -46,6 +48,7 @@ from typing import Any
 
 from miniflow.executors import ExecutorRouter, Outcome, TaskError
 from miniflow.graph import DAG
+from miniflow.preview import summarize
 from miniflow.retry import RetryPolicy, TaskTimeoutError
 from miniflow.states import TERMINAL, TRANSITIONS, State
 from miniflow.store import StateStore
@@ -197,7 +200,12 @@ class Scheduler:
 
         if status == "SUCCESS":
             assert all(s in TERMINAL for s in self.state.values()), self.state
-            if any(s is not State.SUCCESS for s in self.state.values()):
+            # A run fails if any task was skipped or a required task failed;
+            # a failed optional task alone leaves the run successful.
+            if any(
+                s is State.SKIPPED or (s is State.FAILED and not self.dag.tasks[n].optional)
+                for n, s in self.state.items()
+            ):
                 status = "FAILED"
         self.store.finish_run(self.run_id, status)
         return RunResult(
@@ -247,7 +255,9 @@ class Scheduler:
             if name in prior and all(u in self.cached for u in self.dag.upstream[name]):
                 self.cached.add(name)
                 self.results[name] = prior[name]
-                self.store.save_result(self.run_id, name, prior[name], from_cache=True)
+                self.store.save_result(
+                    self.run_id, name, prior[name], from_cache=True, preview=summarize(prior[name])
+                )
                 # PENDING -> SUCCESS without running is only legal here, so bypass _set.
                 self.state[name] = State.SUCCESS
                 self._emit(name, State.SUCCESS, from_cache=True)
@@ -358,8 +368,10 @@ class Scheduler:
             outcome.finished_at,
             outcome.worker,
         )
+        preview = summarize(outcome.value)
         try:
-            self.store.save_result(self.run_id, name, outcome.value)  # also marks SUCCESS
+            # Also marks the task SUCCESS in the store.
+            self.store.save_result(self.run_id, name, outcome.value, preview=preview)
             write_state = False
         except (pickle.PicklingError, TypeError, AttributeError) as exc:
             log.warning("result of %r can't be pickled (%s); it will rerun on resume", name, exc)
@@ -367,6 +379,12 @@ class Scheduler:
         self._set(
             name, State.SUCCESS, attempt=att.attempt, worker=outcome.worker, persist=write_state
         )
+        if write_state and preview:
+            self.store.set_preview(self.run_id, name, preview)
+        self._release(name)
+
+    def _release(self, name: str) -> None:
+        """Count ``name`` as done for its children and start any that are now unblocked."""
         for child in self.dag.downstream[name]:
             self.waiting[child] -= 1
             if self.waiting[child] == 0 and self.state[child] is State.PENDING:
@@ -402,6 +420,11 @@ class Scheduler:
         self._set(
             name, State.FAILED, attempt=att.attempt, worker=worker, error=short, stored_error=full
         )
+        if task.optional:
+            # Optional: the tasks after it still run and receive None for its result.
+            self.results[name] = None
+            self._release(name)
+            return
         reason = f"upstream task {name!r} failed"
         for desc in self.dag.descendants(name):
             if self.state[desc] is State.PENDING:

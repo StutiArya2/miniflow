@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import asdict
@@ -103,6 +104,49 @@ class _Api:
         }
 
 
+class _ExampleRunner:
+    """Runs one bundled example at a time in a background thread (the gallery's Run button)."""
+
+    def __init__(self, db: str, offline: bool) -> None:
+        self.db = db
+        self.offline = offline
+        self._lock = threading.Lock()
+        self.current: str | None = None
+
+    def start(self, name: str) -> bool:
+        """Start ``name``; False if another example is still running."""
+        with self._lock:
+            if self.current is not None:
+                return False
+            self.current = name
+        threading.Thread(
+            target=self._run, args=(name,), daemon=True, name=f"example-{name}"
+        ).start()
+        return True
+
+    def _run(self, name: str) -> None:
+        from miniflow.examples import load
+        from miniflow.executors import ExecutorRouter
+        from miniflow.scheduler import Scheduler
+
+        try:
+            if self.offline:
+                os.environ["MINIFLOW_OFFLINE"] = "1"  # read by the examples; workers inherit it
+            _, dag = load(name)
+            router = ExecutorRouter()
+            with StateStore(self.db) as store:
+                scheduler = Scheduler(dag, router=router, store=store, flow=name)
+                try:
+                    scheduler.run()
+                finally:
+                    router.shutdown(wait=not scheduler.abandoned_work, cancel_futures=True)
+        except Exception:
+            log.exception("example %r failed to run", name)
+        finally:
+            with self._lock:
+                self.current = None
+
+
 class _Handler(BaseHTTPRequestHandler):
     server: DashboardServer
     protocol_version = "HTTP/1.1"
@@ -119,6 +163,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static("index.html"), _STATIC["index.html"])
             elif parts[0] == "static" and len(parts) == 2 and parts[1] in _STATIC:
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
+            elif parts == ["api", "examples"]:
+                self._send_json(self.server.examples_json())
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -284,6 +330,13 @@ class DashboardServer(ThreadingHTTPServer):
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
+        from miniflow.examples import catalog
+
+        self.allow_run = allow_run
+        self.offline = offline
+        self.runner = _ExampleRunner(str(db), offline)
+        self.catalog = catalog()
+        self.example_names = {ex["name"] for ex in self.catalog}
         self.store = StateStore(db)
         self.api = _Api(self.store)
         try:
@@ -303,6 +356,14 @@ class DashboardServer(ThreadingHTTPServer):
         else:
             self.store.close()
             raise OSError(f"no free port in {port}-{port + 20}") from last_error
+
+    def examples_json(self) -> dict[str, Any]:
+        return {
+            "allowRun": self.allow_run,
+            "offline": self.offline,
+            "running": self.runner.current,
+            "examples": self.catalog,
+        }
 
     @property
     def url(self) -> str:

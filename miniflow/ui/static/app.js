@@ -324,6 +324,7 @@ function openStream(runId, since) {
     for (const t of p.tasks) S.tasks.set(t.task, t);
     failures = 0;
     updateGraph();
+    renderOutcome();
     renderSummary();
     renderDetails();
     renderTimeline();
@@ -369,6 +370,8 @@ function startPolling(runId) {
 
 // ------------------------------------------------------------------ render
 function renderAll() {
+  renderStory();
+  renderOutcome();
   renderMeta();
   renderSummary();
   updateGraph();
@@ -402,8 +405,8 @@ function counts() {
   return c;
 }
 
-function stat(label, value, sub) {
-  return h("div", { class: "stat" },
+function stat(label, value, sub, tip) {
+  return h("div", { class: "stat", title: tip || null },
     h("div", { class: "label" }, label),
     h("div", { class: "value" }, value),
     sub ? h("div", { class: "sub" }, sub) : null);
@@ -437,7 +440,8 @@ function renderSummary() {
     stat(S.run.finished_at ? "Duration" : "Elapsed", fmtDur(wall),
       S.run.finished_at ? S.run.status.toLowerCase()
         : [c.RUNNING && `${c.RUNNING} running`, c.RETRYING && `${c.RETRYING} waiting to retry`].filter(Boolean).join(" · ") || "starting…"),
-    stat("Parallel speedup", wall > 0 && busy > 0 ? `×${(busy / wall).toFixed(2)}` : "–", `${fmtDur(busy)} of task time`),
+    stat("Parallel speedup", wall > 0 && busy > 0 ? `×${(busy / wall).toFixed(2)}` : "–", `${fmtDur(busy)} of task time`,
+      "Total time spent inside steps ÷ real time the run took. ×3 means the job did about three steps' worth of work at once. Below ×1 means the steps were so short that scheduling and starting workers took longer than the work itself, or the run spent most of its time waiting before retries."),
     stat("Retries", String(retries), reused ? `${reused} task${reused === 1 ? "" : "s"} reused` : `${S.attempts.length} attempts`),
     stat("Worker kinds", `${kinds.io} · ${kinds.cpu} · ${kinds.async}`, "io · cpu · async"),
   );
@@ -512,7 +516,7 @@ function buildGraph() {
       s("text", { class: "name", x: 14, y: 20 }, truncate(name, 20)),
       s("text", { class: "sub", x: 14, y: 37 }, ""),
       s("text", { class: "badge", x: NODE_W - 12, y: 20, "text-anchor": "end" }, ""),
-      s("title", {}, name),
+      s("title", {}, info.description ? `${name}\n${info.description}` : name),
     );
     nodeLayer.append(g);
     S.nodes.set(name, g);
@@ -526,7 +530,7 @@ function updateGraph() {
     const t = S.tasks.get(name);
     const info = S.graph.tasks[name];
     const state = t ? t.state : "PENDING";
-    g.setAttribute("class", `node n-${state}${S.selected === name ? " selected" : ""}`);
+    g.setAttribute("class", `node n-${state}${info.optional ? " optional" : ""}${S.selected === name ? " selected" : ""}`);
     let sub = `${info.kind} · ${state.toLowerCase()}`;
     if (t && t.attempts > 1) sub += ` · try ${t.attempts}`;
     g.querySelector(".sub").textContent = sub;
@@ -695,16 +699,23 @@ function renderDetails() {
   const link = (n) => h("button", { type: "button", class: "link", onclick: () => select(n) }, n);
   const parts = [
     h("h3", {}, name),
-    h("div", {}, pill(t.state), " ", h("span", { class: "muted" }, `${info.kind} worker`)),
+    h("div", {}, pill(t.state), " ", h("span", { class: "muted" }, `${info.kind} worker${info.optional ? " · optional step" : ""}`)),
+    info.description ? [h("div", { class: "section-title" }, "What this step does"), h("p", { class: "desc" }, info.description)] : null,
+    t.preview ? [h("div", { class: "section-title" }, t.from_cache ? "Result (reused from the previous run)" : "Result"), h("pre", { class: "preview box" }, t.preview)] : null,
     h("dl", { class: "kv" },
       h("dt", {}, "Attempts"), h("dd", {}, String(t.attempts || 0)),
       h("dt", {}, "Duration"), h("dd", {}, took === null ? "–" : fmtDur(took)),
       h("dt", {}, "Started"), h("dd", {}, fmtClock(t.started_at)),
-      h("dt", {}, "Result"), h("dd", {}, t.from_cache ? "reused from the previous run" : t.has_result ? "stored" : t.state === "SUCCESS" ? "not storable (reruns on resume)" : "–"),
+      h("dt", {}, "Saved"), h("dd", {}, t.from_cache ? "reused from the previous run" : t.has_result ? "yes, kept for resume" : t.state === "SUCCESS" ? "no (reruns on resume)" : "–"),
       h("dt", {}, "Upstream"), h("dd", {}, info.after.length ? h("div", { class: "links" }, info.after.map(link)) : "none (root)"),
       h("dt", {}, "Downstream"), h("dd", {}, downstream.length ? h("div", { class: "links" }, downstream.map(link)) : "none (sink)"),
     ),
-    t.error && t.state !== "SUCCESS" ? [h("div", { class: "section-title" }, "Error"), h("pre", { class: "error" }, t.error)] : null,
+    t.error && t.state !== "SUCCESS" ? [
+      h("div", { class: "section-title" }, t.state === "SKIPPED" ? "Why it was skipped" : "What went wrong"),
+      h("pre", { class: "error" }, firstLine(t.error)),
+      t.error.includes("\n") ? h("details", { class: "tech" }, h("summary", {}, "Technical details (Python traceback)"), h("pre", { class: "error" }, t.error)) : null,
+    ] : null,
+    t.state === "FAILED" && info.optional ? h("p", { class: "desc" }, "This step is optional, so the job carried on without it.") : null,
     attempts.length ? h("div", { class: "section-title" }, "Attempts") : null,
     attempts.map((a) => h("div", { class: "attempt" },
       h("div", { class: "attempt-head" },
@@ -715,6 +726,106 @@ function renderDetails() {
   body.replaceChildren(...parts.flat(Infinity).filter(Boolean));
 }
 
+// ---------------------------------------------------------------- examples
+const EX = { list: [], allowRun: false, offline: false, running: null, pending: null };
+
+async function loadExamples() {
+  let d;
+  try { d = await getJSON("/api/examples"); } catch (e) { console.warn(e); return; }
+  Object.assign(EX, { list: d.examples, allowRun: d.allowRun, offline: d.offline, running: d.running });
+  if (!d.running) EX.pending = null;
+  renderGallery();
+}
+
+function renderGallery() {
+  const busy = EX.running || EX.pending;
+  // Rebuild the cards only when something changed: replacing a button under the
+  // pointer would swallow the click.
+  const signature = JSON.stringify([EX.list.map((e) => e.name), EX.allowRun, EX.offline, busy]);
+  if (signature === EX.signature) return;
+  EX.signature = signature;
+  $("gallery-hint").textContent = EX.allowRun
+    ? `Each one is a real job working with ${EX.offline ? "saved real data (offline mode)" : "live public data"}. Pick one and watch it run.`
+    : "Run one from a terminal with the command shown on its card.";
+  $("example-cards").replaceChildren(...EX.list.map((ex) => {
+    const k = ex.kinds;
+    const isRunning = busy === ex.name;
+    const foot = EX.allowRun
+      ? h("button", {
+          type: "button", class: "run-btn", disabled: busy ? true : null,
+          title: busy && !isRunning ? `Wait for ${busy} to finish` : `Start the ${ex.title.toLowerCase()} now`,
+          onclick: () => runExample(ex.name),
+        }, isRunning ? "Running…" : "▶ Run")
+      : h("code", {}, `miniflow example ${ex.name} --ui`);
+    return h("article", { class: "card" },
+      h("h3", {}, ex.title),
+      h("p", {}, ex.description),
+      h("div", { class: "shape-line" }, `${ex.tasks} steps · ${k.io} io · ${k.cpu} cpu · ${k.async} async`),
+      h("div", { class: "card-foot" }, foot, EX.offline ? h("span", { class: "badge-soft" }, "offline data") : null));
+  }));
+}
+
+async function runExample(name) {
+  EX.pending = name;
+  renderGallery();
+  try {
+    const res = await fetch(`/api/examples/${encodeURIComponent(name)}/run`, {
+      method: "POST", headers: { "X-MiniFlow-Action": "run" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || `Could not start ${name} (${res.status})`);
+      EX.pending = null;
+      renderGallery();
+      return;
+    }
+  } catch (e) {
+    EX.pending = null;
+    renderGallery();
+    return;
+  }
+  setFollow(true);
+  $("gallery").open = false; // make room for the run
+  setTimeout(loadRuns, 400);
+  setTimeout(loadExamples, 400);
+}
+
+// ------------------------------------------------------- story & outcome
+function renderStory() {
+  const about = (S.graph && S.graph.about) || {};
+  const box = $("story");
+  box.hidden = !about.title;
+  if (!about.title) return;
+  $("story-title").textContent = about.title;
+  $("story-text").textContent = about.description || "";
+  $("story-watch").hidden = !about.watch;
+  $("story-watch").querySelector("span").textContent = about.watch || "";
+}
+
+function renderOutcome() {
+  const body = $("outcome-body");
+  if (!S.graph) { body.replaceChildren(); return; }
+  const names = Object.keys(S.graph.tasks);
+  const used = new Set(names.flatMap((n) => S.graph.tasks[n].after));
+  // The flow's chosen highlight steps, or else its final steps.
+  const chosen = ((S.graph.about || {}).highlights || []).filter((n) => n in S.graph.tasks);
+  const shown = chosen.length ? chosen : names.filter((n) => !used.has(n));
+  const items = shown.map((n) => {
+    const t = S.tasks.get(n) || { state: "PENDING" };
+    const info = S.graph.tasks[n];
+    let text;
+    if (t.state === "SUCCESS") text = t.preview || "Done.";
+    else if (t.state === "FAILED" || t.state === "SKIPPED") text = firstLine(t.error) || t.state.toLowerCase();
+    else text = "Not finished yet: the result appears here when this step is done.";
+    return h("div", { class: "outcome-item" },
+      h("div", { class: "head" },
+        h("button", { type: "button", class: "link", onclick: () => select(n) }, n),
+        pill(t.state)),
+      info.description ? h("p", { class: "desc muted" }, info.description) : null,
+      h("pre", { class: "preview" }, text));
+  });
+  body.replaceChildren(h("div", { class: "outcome-items" }, items));
+}
 // -------------------------------------------------------------------- init
 function init() {
   initTheme();

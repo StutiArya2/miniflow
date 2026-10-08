@@ -57,10 +57,16 @@ def test_graph_json_from_dag(store: StateStore) -> None:
     graph = store.get_graph(run_id)
     assert graph == {
         "tasks": {
-            "load": {"kind": "io", "after": []},
-            "crunch": {"kind": "cpu", "after": ["load"]},
-            "publish": {"kind": "async", "after": ["crunch", "load"]},
-        }
+            "load": {"kind": "io", "after": [], "description": "", "optional": False},
+            "crunch": {"kind": "cpu", "after": ["load"], "description": "", "optional": False},
+            "publish": {
+                "kind": "async",
+                "after": ["crunch", "load"],
+                "description": "",
+                "optional": False,
+            },
+        },
+        "about": {},
     }
     # Stored as plain JSON so other readers (the dashboard) can parse it directly.
     raw = store._conn.execute("SELECT graph FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0]

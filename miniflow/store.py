@@ -13,7 +13,7 @@ Contract (Phase 2, module C)
         attempts(run_id, task, attempt INT, state TEXT, error TEXT,
                  worker TEXT, started_at REAL, finished_at REAL)
 
-    ``runs.graph`` is JSON ``{"tasks": {name: {"kind": ..., "after": [...]}}}``
+    ``runs.graph`` is JSON ``{"tasks": {name: {"kind", "after", "description"}}, "about": {...}}``
     so the dashboard (Phase 3.5) can draw a run without the flow file.
     ``attempts.worker`` names what ran it (e.g. ``"thread-3"``, ``"pid-1234"``,
     ``"loop"``) for the dashboard timeline. ``updated_at`` lets readers fetch
@@ -28,7 +28,8 @@ Methods
     ``set_state(run_id, task, state: State, *, error: str | None = None) -> None``
     ``record_attempt(run_id, task, attempt, state, error, started_at, finished_at,
     worker: str | None = None) -> None``
-    ``save_result(run_id, task, value: Any, *, from_cache: bool = False) -> None`` -
+    ``set_preview(run_id, task, preview)`` - short human-readable text of a result.
+    ``save_result(run_id, task, value: Any, *, from_cache=False, preview=None) -> None`` -
     pickled; marks SUCCESS. ``from_cache=True`` when the value came from a resume.
     ``get_graph(run_id) -> dict[str, Any]`` - the JSON saved by ``create_run``.
     ``changes_since(run_id, ts: float) -> list[TaskRecord]`` - rows with ``updated_at > ts``.
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS task_states (
     result      BLOB,
     error       TEXT,
     from_cache  INTEGER NOT NULL DEFAULT 0,
+    preview     TEXT,
     started_at  REAL,
     finished_at REAL,
     updated_at  REAL NOT NULL,
@@ -124,6 +126,7 @@ class TaskRecord:
     finished_at: float | None
     updated_at: float
     has_result: bool
+    preview: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,9 @@ class StateStore:
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(task_states)")}
+            if "preview" not in columns:  # databases written before result previews existed
+                self._conn.execute("ALTER TABLE task_states ADD COLUMN preview TEXT")
             self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._conn.commit()
 
@@ -185,11 +191,17 @@ class StateStore:
         """Start a new run: every task PENDING and the graph saved as JSON."""
         run_id = uuid.uuid4().hex[:12]
         order = dag.topological_order()
-        graph = {
+        graph: dict[str, Any] = {
             "tasks": {
-                name: {"kind": dag.tasks[name].kind, "after": list(dag.upstream[name])}
+                name: {
+                    "kind": dag.tasks[name].kind,
+                    "after": list(dag.upstream[name]),
+                    "description": dag.tasks[name].description,
+                    "optional": dag.tasks[name].optional,
+                }
                 for name in order
-            }
+            },
+            "about": dict(dag.about),
         }
         with self._lock, self._conn:
             now = self._now()
@@ -260,15 +272,33 @@ class StateStore:
                 (run_id, task, attempt, state.value, error, worker, started_at, finished_at),
             )
 
-    def save_result(self, run_id: str, task: str, value: Any, *, from_cache: bool = False) -> None:
+    def save_result(
+        self,
+        run_id: str,
+        task: str,
+        value: Any,
+        *,
+        from_cache: bool = False,
+        preview: str | None = None,
+    ) -> None:
         """Pickle ``value`` and mark the task SUCCESS."""
         blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         with self._lock, self._conn:
             now = self._now()
             cur = self._conn.execute(
                 "UPDATE task_states SET state = ?, result = ?, error = NULL, from_cache = ?,"
-                " finished_at = ?, updated_at = ? WHERE run_id = ? AND task = ?",
-                (State.SUCCESS.value, blob, int(from_cache), now, now, run_id, task),
+                " preview = ?, finished_at = ?, updated_at = ? WHERE run_id = ? AND task = ?",
+                (State.SUCCESS.value, blob, int(from_cache), preview, now, now, run_id, task),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no task {task!r} in run {run_id!r}")
+
+    def set_preview(self, run_id: str, task: str, preview: str | None) -> None:
+        """Store a short human-readable description of a task's result."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE task_states SET preview = ?, updated_at = ? WHERE run_id = ? AND task = ?",
+                (preview, self._now(), run_id, task),
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no task {task!r} in run {run_id!r}")
@@ -298,7 +328,7 @@ class StateStore:
         """Task rows of ``run_id`` with ``updated_at > ts``, oldest change first."""
         rows = self._query(
             "SELECT run_id, task, state, attempts, error, from_cache, started_at, finished_at,"
-            " updated_at, result IS NOT NULL FROM task_states"
+            " updated_at, result IS NOT NULL, preview FROM task_states"
             " WHERE run_id = ? AND updated_at > ? ORDER BY updated_at, task",
             (run_id, ts),
         )
@@ -314,6 +344,7 @@ class StateStore:
                 finished_at=r[7],
                 updated_at=r[8],
                 has_result=bool(r[9]),
+                preview=r[10],
             )
             for r in rows
         ]
