@@ -296,3 +296,41 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13px; }
 .desc { margin: 6px 0 0; font-size: 13px; }
 
 .tech summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 6px; }
+/* Low-code studio: keeps the dashboard's palette and status tokens. */
+body.studio-active #app > :not(#studio) { display: none !important; }
+.studio { display: flex; flex-direction: column; gap: 12px; min-height: calc(100vh - 100px); }
+.studio-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: 12px; }
+.studio-toolbar label, .studio-inspector label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.studio-toolbar input, .studio-toolbar select, .studio-palette input, .studio-inspector input, .studio-inspector textarea, .studio-inspector select { box-sizing: border-box; width: 100%; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 7px; padding: 8px 10px; font: inherit; }
+.studio-toolbar input { min-width: 160px; }
+.studio-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; gap: 12px; min-height: 640px; }
+.studio-palette, .studio-inspector { padding: 14px; min-width: 0; }
+.studio-palette h2, .studio-inspector h2 { font-size: 15px; margin: 0 0 12px; }
+.studio-blocks { display: grid; gap: 6px; margin-top: 12px; max-height: 560px; overflow: auto; }
+.studio-block { text-align: left; border: 1px solid var(--border); color: var(--text); background: var(--panel); border-radius: 8px; padding: 9px; cursor: pointer; }
+.studio-block:hover, .studio-node:hover { border-color: var(--accent); }
+.studio-block small { display: block; margin-top: 3px; color: var(--muted); }
+.studio-center { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.studio-canvas-scroll { flex: 1; overflow: auto; min-height: 580px; }
+.studio-canvas { position: relative; width: 1400px; height: 950px; background-color: var(--panel); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px; }
+#studio-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#studio-wires path { fill: none; stroke: var(--edge); stroke-width: 2; }
+.studio-node { position: absolute; width: 180px; min-height: 70px; border: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--panel); color: var(--text); box-shadow: var(--shadow); border-radius: 9px; padding: 10px 12px; cursor: grab; user-select: none; }
+.studio-node.selected { outline: 2px solid var(--accent); }
+.studio-node.connecting { outline: 2px dashed var(--accent); }
+.studio-node strong, .studio-node small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-node small { margin-top: 6px; color: var(--muted); }
+.studio-node button { position: absolute; top: 26px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent); background: var(--panel); color: var(--accent); font-size: 10px; line-height: 10px; padding: 0; cursor: pointer; }
+.studio-node .input-port { left: -11px; }
+.studio-node .output-port { right: -11px; }
+.studio-node.invalid { border-color: var(--failed-line); }
+.studio-message { border-top: 1px solid var(--border); padding: 10px 14px; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.studio-message.error { color: var(--failed-ink); background: var(--failed); }
+.studio-inspector { overflow: auto; }
+.studio-inspector form { display: grid; gap: 12px; }
+.studio-inspector textarea { min-height: 76px; resize: vertical; font-family: var(--mono); }
+.studio-inspector .hint { font-weight: 400; }
+.studio-inspector .btn { margin-top: 8px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+@media (max-width: 1000px) { .studio-layout { grid-template-columns: 170px minmax(0, 1fr); } .studio-inspector { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .studio-layout { display: block; } .studio-palette { margin-bottom: 10px; } .studio-blocks { display: flex; overflow-x: auto; } .studio-block { min-width: 135px; } .studio-inspector { margin-top: 10px; } .studio-canvas-scroll { min-height: 420px; } }

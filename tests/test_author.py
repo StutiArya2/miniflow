@@ -59,3 +59,9 @@ def test_block_catalog_has_form_fields_without_secret_defaults():
     password = next(item for item in blocks["email"]["settings"] if item["name"] == "password")
     assert password["secret"] is True
     assert "default" not in password
+
+
+def test_workspace_catalog_loads_local_plugin_blocks():
+    examples = Path(__file__).parent.parent / "examples"
+    blocks = {block["name"] for block in FlowWorkspace(examples).catalog()}
+    assert "convert_currency" in blocks

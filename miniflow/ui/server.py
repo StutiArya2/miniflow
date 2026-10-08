@@ -42,7 +42,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
-from miniflow.ui.author import FlowWorkspace, WorkspaceError, block_catalog
+from miniflow.ui.author import FlowWorkspace, WorkspaceError
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
 
@@ -53,6 +53,7 @@ log = logging.getLogger("miniflow.ui")
 _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "editor.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _POLL_SECONDS = 0.25
@@ -168,7 +169,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
             elif parts == ["api", "blocks"] and self.server.workspace is not None:
-                self._send_json(block_catalog())
+                self._send_json(self.server.workspace.catalog())
             elif parts == ["api", "flows"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.list())
             elif (

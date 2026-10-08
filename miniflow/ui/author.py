@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from miniflow.blocks import REQUIRED, all_blocks
+from miniflow.blocks import REQUIRED, all_blocks, load_plugins
 from miniflow.flowfile import FlowFileError, load_json_flow
 
 __all__ = ["FlowWorkspace", "WorkspaceError", "block_catalog"]
@@ -80,6 +81,12 @@ class FlowWorkspace:
             and _NAME.fullmatch(p.stem)
             and not p.stem.startswith("_")
         )
+
+    def catalog(self) -> builtins.list[dict[str, Any]]:
+        plugins = self.folder / "blocks"
+        if plugins.is_dir():
+            load_plugins(plugins)
+        return block_catalog()
 
     def read(self, name: str) -> Any:
         path = self._path(name)

@@ -19,6 +19,8 @@
     </div>
     <div class="run-meta" id="run-meta" aria-live="polite"></div>
     <div class="actions">
+      <button type="button" id="view-editor" class="btn" hidden>Editor</button>
+      <button type="button" id="view-runs" class="btn" hidden>Runs</button>
       <label class="follow" title="Switch to new runs automatically">
         <input type="checkbox" id="follow" checked> Follow latest
       </label>
@@ -27,6 +29,37 @@
   </header>
 
   <main id="app">
+    <section id="studio" class="studio" hidden aria-label="Workflow editor">
+      <div class="studio-toolbar panel">
+        <label>Flow <select id="studio-flow"></select></label>
+        <button type="button" id="studio-new" class="btn">New</button>
+        <label>Name <input id="studio-name" autocomplete="off" pattern="[A-Za-z_][-A-Za-z0-9_]*"></label>
+        <button type="button" id="studio-validate" class="btn">Validate</button>
+        <button type="button" id="studio-save" class="btn">Save</button>
+        <button type="button" id="studio-run" class="btn primary">▶ Run</button>
+      </div>
+      <div class="studio-layout">
+        <aside class="studio-palette panel">
+          <h2>Blocks</h2>
+          <label class="sr-only" for="studio-search">Search blocks</label>
+          <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
+          <div id="studio-blocks" class="studio-blocks"></div>
+        </aside>
+        <div class="studio-center">
+          <div class="studio-canvas-scroll">
+            <div id="studio-canvas" class="studio-canvas" aria-label="Workflow canvas">
+              <svg id="studio-wires" aria-hidden="true"></svg>
+              <div id="studio-nodes"></div>
+            </div>
+          </div>
+          <div id="studio-message" class="studio-message" role="status">Select a block to configure it.</div>
+        </div>
+        <aside class="studio-inspector panel">
+          <h2 id="studio-inspector-title">Settings</h2>
+          <div id="studio-settings"><p class="muted">Select a node on the canvas.</p></div>
+        </aside>
+      </div>
+    </section>
     <details class="panel gallery" id="gallery" open>
       <summary><h2>Try a real-world example</h2><span class="hint" id="gallery-hint">Pick one and watch it run.</span></summary>
       <div class="cards" id="example-cards"></div>
@@ -117,5 +150,6 @@
   </main>
 
   <script src="/static/app.js"></script>
+  <script src="/static/editor.js"></script>
 </body>
 </html>
