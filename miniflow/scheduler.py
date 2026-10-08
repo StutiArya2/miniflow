@@ -7,7 +7,8 @@ rank, :meth:`miniflow.graph.DAG.critical_path_lengths`), so tasks that gate
 the most remaining work start first. Tasks are dispatched while their worker
 kind has free capacity, and the loop blocks in
 ``concurrent.futures.wait(..., return_when=FIRST_COMPLETED)``; there is no
-polling. The wait is bounded only by the nearest retry or timeout deadline.
+polling. The wait is bounded only by the nearest retry or timeout deadline, and
+on Windows by a short limit, since Ctrl+C can't interrupt a blocked wait there.
 
 Failures go through :class:`miniflow.retry.RetryPolicy`. A failed attempt
 with budget left becomes RETRYING and re-enters the ready queue after its
@@ -34,6 +35,7 @@ import logging
 import os
 import pickle
 import random
+import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
@@ -52,6 +54,10 @@ from miniflow.task import KINDS, Kind, Task
 __all__ = ["Event", "RunResult", "Scheduler", "run"]
 
 log = logging.getLogger("miniflow")
+
+# On Windows a blocked wait can't be interrupted by Ctrl+C (or the dashboard's
+# Ctrl+Break), so the loop wakes up at least this often there to notice it.
+_WAKE_LIMIT: float | None = 0.25 if sys.platform == "win32" else None
 
 Listener = Callable[["Event"], None]
 
@@ -259,6 +265,8 @@ class Scheduler:
             if not self.running and not self.delayed:
                 return
             timeout = self._next_wakeup()
+            if _WAKE_LIMIT is not None:
+                timeout = _WAKE_LIMIT if timeout is None else min(timeout, _WAKE_LIMIT)
             if self.running:
                 done, _ = wait(list(self.running), timeout=timeout, return_when=FIRST_COMPLETED)
                 for fut in done:
