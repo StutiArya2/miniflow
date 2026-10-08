@@ -25,6 +25,7 @@ from miniflow.flowtest import run_flow_tests
 from miniflow.graph import DAG, GraphError
 from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
+from miniflow.signature import step_signature
 from miniflow.states import State
 from miniflow.store import StateStore
 from miniflow.ui.server import DashboardServer
@@ -287,6 +288,17 @@ def _execute(args: argparse.Namespace, resume: bool) -> int:
     if getattr(args, "offline", False):
         os.environ["MINIFLOW_OFFLINE"] = "1"
     flow, dag, spec = _load(args)
+    until = getattr(args, "until", None)
+    if spec is None and (until or getattr(args, "reuse", None)):
+        raise _UsageError("--until and --reuse apply to JSON flows")
+    if until:
+        if until not in dag:
+            raise _UsageError(f"no step {until!r} in {flow!r}")
+        selected = dag.ancestors(until) | {until}
+        dag = DAG.from_tasks(
+            (dag.tasks[n] for n in dag.topological_order() if n in selected),
+            about={**dag.about, "partial_target": until},
+        )
     server = _start_dashboard(args) if args.ui else None
     try:
         return _execute_with(args, resume, dag, flow, server, spec)
@@ -310,6 +322,16 @@ def _execute_with(
             if previous is None:
                 print(f"error: no earlier run of {flow!r} in {args.db}", file=sys.stderr)
                 return 2
+        elif getattr(args, "reuse", None):
+            previous = args.reuse
+            if previous == "latest":
+                previous = store.latest_run(flow)
+            if previous is not None and previous not in {r.run_id for r in store.list_runs()}:
+                raise _UsageError(f"no earlier run {previous!r} in {args.db}")
+            if previous is not None:
+                earlier = next(r for r in store.list_runs() if r.run_id == previous)
+                if earlier.flow != flow:
+                    raise _UsageError(f"run {previous!r} belongs to {earlier.flow!r}, not {flow!r}")
         router = ExecutorRouter(io_workers=args.io_workers, cpu_workers=args.cpu_workers)
         reporter = _reporter(dag, args)
         scheduler = Scheduler(
@@ -319,6 +341,9 @@ def _execute_with(
             policy=RetryPolicy(base=args.retry_base, cap=args.retry_cap),
             flow=flow,
             listeners=[reporter] if reporter else [],
+            signatures={name: step_signature(step) for name, step in dag.tasks.items()}
+            if spec is not None
+            else None,
         )
         try:
             if reporter:
@@ -586,6 +611,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="run a flow")
     run_options(r)
+    r.add_argument("--until", metavar="STEP", help="run this step and its dependencies only")
+    r.add_argument("--reuse", metavar="RUN_ID", help="reuse unchanged results (or 'latest')")
     r.set_defaults(func=_cmd_run)
 
     rs = sub.add_parser("resume", help="rerun a flow, reusing results that already succeeded")

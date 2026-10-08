@@ -33,6 +33,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import IO, Any
 
+from miniflow.flowfile import FlowFileError, load_json_flow
 from miniflow.store import RunRecord, StateStore
 
 __all__ = ["ControlError", "RunController"]
@@ -143,6 +144,19 @@ class RunController:
             )
         return self._launch("resume", meta.flow, path, rate, ["--run", run_id])
 
+    def partial(self, flow: str, step: str) -> dict[str, Any]:
+        """Run through one JSON step, reusing only matching earlier results."""
+        path = self.flows.get(flow)
+        if path is None or path.suffix != ".json":
+            raise ControlError(f"no JSON flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
+        try:
+            dag = load_json_flow(path).dag
+        except FlowFileError as exc:
+            raise ControlError(str(exc), HTTPStatus.BAD_REQUEST) from exc
+        if step not in dag:
+            raise ControlError(f"no step {step!r} in {flow!r}", HTTPStatus.BAD_REQUEST)
+        return self._launch("partial", flow, path, 0.0, ["--until", step, "--reuse", "latest"])
+
     def cancel(self) -> None:
         """Stop the active run and return once its process has exited."""
         with self._lock:
@@ -190,7 +204,8 @@ class RunController:
             self._reap()
             if self._child is not None:
                 raise ControlError(f"{self._child.flow} is still running", HTTPStatus.CONFLICT)
-            cmd = [sys.executable, "-m", "miniflow", action, str(path), "--db", self.db, "--quiet"]
+            command = "run" if action == "partial" else action
+            cmd = [sys.executable, "-m", "miniflow", command, str(path), "--db", self.db, "--quiet"]
             env = {**os.environ, "MINIFLOW_FAIL_RATE": f"{rate:g}"}
             # Not a pipe, so a chatty run can't block; kept open until _finish reads it.
             stderr = tempfile.TemporaryFile()  # noqa: SIM115

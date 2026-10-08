@@ -196,7 +196,9 @@ class StateStore:
         return ts
 
     # ------------------------------------------------------------------ writes
-    def create_run(self, flow: str, dag: DAG) -> str:
+    def create_run(
+        self, flow: str, dag: DAG, *, signatures: dict[str, str | None] | None = None
+    ) -> str:
         """Start a new run: every task PENDING and the graph saved as JSON."""
         run_id = uuid.uuid4().hex[:12]
         order = dag.topological_order()
@@ -207,6 +209,7 @@ class StateStore:
                     "after": list(dag.upstream[name]),
                     "description": dag.tasks[name].description,
                     "optional": dag.tasks[name].optional,
+                    **({"signature": signatures.get(name)} if signatures is not None else {}),
                 }
                 for name in order
             },

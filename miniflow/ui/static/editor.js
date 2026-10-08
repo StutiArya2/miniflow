@@ -347,6 +347,17 @@ async function studioRun() {
   } catch (error) { studioMessage(String(error), true); }
 }
 
+async function studioPartial() {
+  if (!Studio.selected) { studioMessage("Select a step on the canvas first.", true); return; }
+  const step = Studio.selected;
+  if (!await studioValidate(true)) return;
+  try {
+    await studioApi("/api/control/partial", { flow: Studio.name, step });
+    studioShow(false);
+    setTimeout(loadRuns, 500);
+  } catch (error) { studioMessage(String(error), true); }
+}
+
 async function studioInit() {
   try {
     const [catalog] = await Promise.all([studioApi("/api/blocks"), studioList()]);
@@ -361,6 +372,7 @@ async function studioInit() {
     document.getElementById("studio-test").onclick = studioTest;
     document.getElementById("studio-save").onclick = () => studioValidate(true);
     document.getElementById("studio-run").onclick = studioRun;
+    document.getElementById("studio-partial").onclick = studioPartial;
     if (location.hash === "#editor") studioShow(true);
   } catch { /* read-only dashboard has no editor */ }
 }

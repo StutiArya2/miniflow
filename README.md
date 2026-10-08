@@ -98,6 +98,11 @@ miniflow ui --flows examples                   # edit, validate, save and run in
 
 Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
 searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+Select a node and choose **Run up to selected** to execute just that node and its dependencies.
+MiniFlow reuses results from the latest run when their step configuration, referenced parameters,
+environment values, code, local file inputs and upstream results still match. A changed input
+reruns the affected branch; each partial run appears in normal run history.
+The equivalent CLI command is `miniflow run examples/sales_report.json --until by_region --reuse latest`.
 The **Flow tests** panel accepts sample results for selected steps and expected results for
 downstream steps. Tests run only the needed branch and leave the main run database untouched.
 A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declared `params`

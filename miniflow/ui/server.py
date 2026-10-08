@@ -10,6 +10,7 @@ Endpoints:
 ``GET /api/control``               flows the dashboard can start and the active run
 ``POST /api/control/run``          ``{"flow": name, "fail_rate": 0..1}``: start a run
 ``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
+``POST /api/control/partial``      ``{"flow": name, "step": name}``: run through one step
 ``POST /api/control/cancel``       ``{}``: stop the active run
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
@@ -62,7 +63,7 @@ _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
 _MAX_BODY = 4096
 _MAX_FLOW_BODY = 262144
-_ACTIONS = ("run", "resume", "cancel")
+_ACTIONS = ("run", "resume", "partial", "cancel")
 
 
 def _static(name: str) -> bytes:
@@ -256,6 +257,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(active, HTTPStatus.ACCEPTED)
             elif parts[2] == "resume":
                 active = controller.resume(_text(body, "run_id"), body.get("fail_rate"))
+                self._send_json(active, HTTPStatus.ACCEPTED)
+            elif parts[2] == "partial":
+                active = controller.partial(_text(body, "flow"), _text(body, "step"))
                 self._send_json(active, HTTPStatus.ACCEPTED)
             else:
                 controller.cancel()

@@ -161,6 +161,27 @@ def test_only_one_run_at_a_time(controller, store):
     assert err.value.status == HTTPStatus.CONFLICT
     wait_until(lambda: task_running(store, "sleepy", "slow"))
     controller.cancel()
+
+
+def test_partial_json_run_uses_same_history(controller, store, flows_dir):
+    path = flows_dir / "small.json"
+    path.write_text(
+        '{"steps":{"first":{"block":"log","settings":{"message":"hello"}},'
+        '"second":{"block":"log","settings":{"message":"done"},"after":["first"]}}}',
+        encoding="utf-8",
+    )
+    controller.add_flow("small", path)
+    controller.start("small", 0)
+    wait_until(lambda: idle(controller))
+    first = store.latest_run("small")
+    assert first is not None
+    controller.partial("small", "first")
+    wait_until(lambda: idle(controller))
+    second = store.latest_run("small")
+    assert second is not None
+    assert second != first
+    assert set(store.get_states(second)) == {"first"}
+    assert store.changes_since(second, 0)[0].from_cache
     assert store.latest_run("quick") is None
 
 

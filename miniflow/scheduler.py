@@ -153,6 +153,7 @@ class Scheduler:
         weight: Callable[[Task], float] | None = None,
         listeners: Iterable[Listener] = (),
         rng: random.Random | None = None,
+        signatures: Mapping[str, str | None] | None = None,
     ) -> None:
         if async_limit < 1:
             raise ValueError("async_limit must be >= 1")
@@ -165,6 +166,7 @@ class Scheduler:
         self._async_limit = async_limit
         self._rank = dag.critical_path_lengths(weight)
         self._rng = rng
+        self.signatures = dict(signatures) if signatures is not None else None
 
     # ------------------------------------------------------------------ public
     def run(self, resume_from: str | None = None) -> RunResult:
@@ -176,7 +178,7 @@ class Scheduler:
         owned = self._router_arg is None
         self.router = self._router_arg or ExecutorRouter()
         self._reset()
-        self.run_id = self.store.create_run(self.flow, self.dag)
+        self.run_id = self.store.create_run(self.flow, self.dag, signatures=self.signatures)
         status = "SUCCESS"
         try:
             if resume_from is not None:
@@ -250,9 +252,19 @@ class Scheduler:
 
     def _load_cache(self, previous_run: str) -> None:
         prior = self.store.load_completed(previous_run)
+        prior_graph = self.store.get_graph(previous_run)
+        if self.signatures is not None:
+            runs = {record.run_id: record for record in self.store.list_runs()}
+            if runs[previous_run].flow != self.flow:
+                raise ValueError("cannot reuse results from a different flow")
         for name in self.dag.topological_order():
             # Reuse a result only if everything it was computed from was reused too.
-            if name in prior and all(u in self.cached for u in self.dag.upstream[name]):
+            same = self.signatures is None or (
+                self.signatures.get(name) is not None
+                and self.signatures[name]
+                == prior_graph.get("tasks", {}).get(name, {}).get("signature")
+            )
+            if same and name in prior and all(u in self.cached for u in self.dag.upstream[name]):
                 self.cached.add(name)
                 self.results[name] = prior[name]
                 self.store.save_result(
