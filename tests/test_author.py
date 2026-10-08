@@ -65,3 +65,26 @@ def test_workspace_catalog_loads_local_plugin_blocks():
     examples = Path(__file__).parent.parent / "examples"
     blocks = {block["name"] for block in FlowWorkspace(examples).catalog()}
     assert "convert_currency" in blocks
+
+
+def test_browser_can_run_unsaved_flow_tests(tmp_path: Path):
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        flow = {
+            "steps": {
+                "note": {"block": "log", "settings": {"message": "Count {{ source.count }}"}},
+                "source": {"block": "read_json", "settings": {"path": "missing.json"}},
+            },
+            "tests": [
+                {
+                    "name": "sample",
+                    "inputs": {"source": [1, 2]},
+                    "expect": {"note": {"level": "info", "message": "Count 2"}},
+                }
+            ],
+        }
+        status, result = request(
+            server, "POST", "/api/flows/test", {"name": "unsaved", "flow": flow}
+        )
+        assert status == 200
+        assert result == [{"name": "sample", "passed": True, "problems": []}]
+        assert not (tmp_path / "unsaved.json").exists()

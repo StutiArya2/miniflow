@@ -21,6 +21,7 @@ from typing import Any, TextIO
 from miniflow.blocks import BlockError, all_blocks, get_block, load_plugins, type_name
 from miniflow.executors import ExecutorRouter
 from miniflow.flowfile import Flow, FlowFileError, load_json_flow
+from miniflow.flowtest import run_flow_tests
 from miniflow.graph import DAG, GraphError
 from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
@@ -480,6 +481,20 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_test(args: argparse.Namespace) -> int:
+    path = Path(args.flow)
+    if path.suffix.lower() != ".json":
+        raise _UsageError("miniflow test needs a JSON flow file")
+    reports = run_flow_tests(path)
+    for report in reports:
+        print(f"{'PASS' if report['passed'] else 'FAIL'} {report['name']}")
+        for problem in report["problems"]:
+            print(f"  {problem}")
+    passed = sum(report["passed"] for report in reports)
+    print(f"{passed}/{len(reports)} flow tests passed")
+    return 0 if passed == len(reports) else 1
+
+
 def _default_text(value: Any) -> str:
     try:
         return json.dumps(value)
@@ -618,6 +633,10 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("flow")
     flow_options(v)
     v.set_defaults(func=_cmd_validate)
+
+    t = sub.add_parser("test", help="run sample-input checks declared in a JSON flow")
+    t.add_argument("flow", help="JSON flow file containing 'tests' cases")
+    t.set_defaults(func=_cmd_test)
 
     b = sub.add_parser("blocks", help="list the blocks for JSON flows, or describe one")
     b.add_argument("name", nargs="?", help="block to describe")

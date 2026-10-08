@@ -4,6 +4,7 @@
 const Studio = {
   blocks: new Map(), flow: { steps: {} }, name: "", selected: null,
   connecting: null, problems: [], dirty: false, visible: false,
+  testIndex: 0,
 };
 
 function studioMessage(message, error = false) {
@@ -45,6 +46,7 @@ async function studioOpen(name) {
     Studio.flow = await studioApi(`/api/flows/${encodeURIComponent(name)}`);
     Studio.name = name;
     Studio.selected = null;
+    Studio.testIndex = 0;
     Studio.problems = [];
     Studio.dirty = false;
     document.getElementById("studio-name").value = name;
@@ -58,6 +60,7 @@ function studioNew() {
   Studio.flow = { description: "", params: {}, steps: {} };
   Studio.name = "new_flow";
   Studio.selected = null;
+  Studio.testIndex = 0;
   Studio.problems = [];
   Studio.dirty = true;
   document.getElementById("studio-name").value = Studio.name;
@@ -189,6 +192,88 @@ function studioRender() {
   }));
   studioWires(positions);
   studioInspector();
+  studioRenderTests();
+}
+
+function studioTestValue(text) {
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+function studioTestRows(caseData, key) {
+  const group = document.createElement("div"); group.className = "studio-test-group";
+  const heading = document.createElement("h3");
+  heading.textContent = key === "inputs" ? "Sample step results" : "Expected step results";
+  group.append(heading);
+  const values = caseData[key] ||= {};
+  const names = Object.keys(Studio.flow.steps);
+  for (const [step, value] of Object.entries(values)) {
+    const row = document.createElement("div"); row.className = "studio-test-row";
+    const picker = document.createElement("select");
+    picker.setAttribute("aria-label", `${key} step`);
+    picker.append(...names.map((name) => new Option(name, name)));
+    picker.value = step;
+    picker.onchange = () => {
+      if (picker.value !== step) { values[picker.value] = values[step]; delete values[step]; Studio.dirty = true; studioRenderTests(); }
+    };
+    const field = document.createElement("textarea");
+    field.setAttribute("aria-label", `${key} value for ${step}`);
+    field.value = JSON.stringify(value, null, 2);
+    field.onchange = () => { values[step] = studioTestValue(field.value); Studio.dirty = true; };
+    const remove = document.createElement("button"); remove.type = "button";
+    remove.className = "btn"; remove.textContent = "Remove";
+    remove.onclick = () => { delete values[step]; Studio.dirty = true; studioRenderTests(); };
+    row.append(picker, field, remove); group.append(row);
+  }
+  const add = document.createElement("button"); add.type = "button";
+  add.className = "btn"; add.textContent = key === "inputs" ? "Add sample" : "Add expectation";
+  add.onclick = () => {
+    const next = names.find((name) => !Object.hasOwn(values, name));
+    if (!next) { studioMessage("Add a step to the canvas first.", true); return; }
+    values[next] = null; Studio.dirty = true; studioRenderTests();
+  };
+  group.append(add);
+  return group;
+}
+
+function studioRenderTests() {
+  const host = document.getElementById("studio-test-editor");
+  const cases = Studio.flow.tests ||= [];
+  const toolbar = document.createElement("div"); toolbar.className = "studio-test-toolbar";
+  const select = document.createElement("select"); select.setAttribute("aria-label", "Test case");
+  select.append(...cases.map((test, index) => new Option(test.name || `Case ${index + 1}`, String(index))));
+  if (cases.length) select.value = String(Math.min(Studio.testIndex, cases.length - 1));
+  select.onchange = () => { Studio.testIndex = Number(select.value); studioRenderTests(); };
+  const add = document.createElement("button"); add.type = "button"; add.className = "btn"; add.textContent = "New test case";
+  add.onclick = () => {
+    cases.push({ name: `case ${cases.length + 1}`, inputs: {}, expect: {} });
+    Studio.testIndex = cases.length - 1; Studio.dirty = true;
+    document.getElementById("studio-test-panel").open = true;
+    studioRenderTests();
+  };
+  toolbar.append(select, add);
+  if (!cases.length) { host.replaceChildren(toolbar); return; }
+  const current = cases[Studio.testIndex];
+  const label = document.createElement("label"); label.textContent = "Test name ";
+  const name = document.createElement("input"); name.value = current.name;
+  name.setAttribute("aria-label", "Test name");
+  name.onchange = () => { current.name = name.value; Studio.dirty = true; studioRenderTests(); };
+  label.append(name); toolbar.append(label);
+  const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn danger"; remove.textContent = "Delete test";
+  remove.onclick = () => { cases.splice(Studio.testIndex, 1); Studio.testIndex = 0; Studio.dirty = true; studioRenderTests(); };
+  toolbar.append(remove);
+  host.replaceChildren(toolbar, studioTestRows(current, "inputs"), studioTestRows(current, "expect"));
+}
+
+async function studioTest() {
+  Studio.name = document.getElementById("studio-name").value.trim();
+  try {
+    const reports = await studioApi("/api/flows/test", { name: Studio.name, flow: Studio.flow });
+    if (!Array.isArray(reports)) { studioMessage((reports.problems || ["Tests could not run."]).join("\n"), true); return; }
+    const passed = reports.filter((report) => report.passed).length;
+    studioMessage(`${passed}/${reports.length} tests passed\n` + reports.map((report) =>
+      `${report.passed ? "PASS" : "FAIL"} ${report.name}${report.problems.length ? ": " + report.problems.join("; ") : ""}`).join("\n"), passed !== reports.length);
+    document.getElementById("studio-test-panel").open = true;
+  } catch (error) { studioMessage(String(error), true); }
 }
 
 function studioValue(raw, types) {
@@ -273,6 +358,7 @@ async function studioInit() {
     document.getElementById("studio-new").onclick = studioNew;
     document.getElementById("studio-search").oninput = studioPalette;
     document.getElementById("studio-validate").onclick = () => studioValidate(false);
+    document.getElementById("studio-test").onclick = studioTest;
     document.getElementById("studio-save").onclick = () => studioValidate(true);
     document.getElementById("studio-run").onclick = studioRun;
     if (location.hash === "#editor") studioShow(true);

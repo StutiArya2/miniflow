@@ -13,6 +13,7 @@ from typing import Any
 
 from miniflow.blocks import REQUIRED, all_blocks, load_plugins
 from miniflow.flowfile import FlowFileError, load_json_flow
+from miniflow.flowtest import run_flow_tests
 
 __all__ = ["FlowWorkspace", "WorkspaceError", "block_catalog"]
 
@@ -132,3 +133,6 @@ class FlowWorkspace:
             finally:
                 temporary.unlink(missing_ok=True)
         return result
+
+    def test(self, name: str, document: Any) -> builtins.list[dict[str, Any]]:
+        return run_flow_tests(self._path(name), document)

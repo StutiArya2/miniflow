@@ -73,7 +73,7 @@ from miniflow.task import KINDS, Task, task
 
 __all__ = ["Flow", "FlowFileError", "load_json_flow"]
 
-_TOP = ("description", "params", "steps", "outputs", "on_failure")
+_TOP = ("description", "params", "steps", "outputs", "on_failure", "tests")
 _STEP_FIELDS = (
     "block",
     "flow",
@@ -119,6 +119,7 @@ class Flow:
     params: dict[str, Any] = field(default_factory=dict)
     on_failure: dict[str, Any] | None = None
     outputs: dict[str, Any] | None = None
+    tests: tuple[dict[str, Any], ...] = ()
 
     def run_on_failure(self, result: RunResult) -> Any:
         """Run the ``on_failure`` block for a failed run; ``None`` if there is none."""
@@ -629,6 +630,38 @@ def load_json_flow(
 
     on_failure = spec.get("on_failure")
     outputs = spec.get("outputs")
+    flow_tests = spec.get("tests", [])
+    if not isinstance(flow_tests, list):
+        c.add("'tests' should be a list of test cases")
+        flow_tests = []
+    test_names: set[str] = set()
+    for index, case in enumerate(flow_tests, 1):
+        where = f"test {index}"
+        if not isinstance(case, dict):
+            c.add(f"{where} should be an object with 'name', 'inputs' and 'expect'")
+            continue
+        for key in case:
+            if key not in ("name", "inputs", "expect", "params"):
+                c.add(f"{where}: unknown field {key!r}")
+        test_name = case.get("name")
+        if not isinstance(test_name, str) or not test_name.strip():
+            c.add(f"{where}: name should be non-empty text")
+        elif test_name in test_names:
+            c.add(f"{where}: name {test_name!r} is repeated")
+        else:
+            test_names.add(test_name)
+        for key in ("inputs", "expect", "params"):
+            values_for_key = case.get(key, {})
+            if not isinstance(values_for_key, dict):
+                c.add(f"{where}: {key!r} should be an object")
+                continue
+            if key == "expect" and not values_for_key:
+                c.add(f"{where}: 'expect' needs at least one step result")
+            options = declared_params if key == "params" else steps
+            for step_name in values_for_key:
+                if step_name not in options:
+                    suggestion = _suggest(step_name, options)
+                    c.add(f"{where}: {key!r} names unknown {step_name!r}.{suggestion}")
     if outputs is not None:
         if not isinstance(outputs, dict):
             c.add("'outputs' should be an object of named results")
@@ -663,4 +696,5 @@ def load_json_flow(
         params=values,
         on_failure=on_failure,
         outputs=outputs,
+        tests=tuple(case for case in flow_tests if isinstance(case, dict)),
     )

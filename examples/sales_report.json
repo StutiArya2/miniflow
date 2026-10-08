@@ -61,5 +61,17 @@
   "on_failure": {
     "block": "log",
     "settings": {"message": "sales_report failed at {{ failure.step }}: {{ failure.error }}", "level": "error"}
-  }
+  },
+  "tests": [
+    {
+      "name": "only large orders remain",
+      "inputs": {"in_inr": [
+        {"order_id": 1, "region": "North", "product": "A", "amount_inr": 30000},
+        {"order_id": 2, "region": "South", "product": "B", "amount_inr": 5000}
+      ]},
+      "expect": {"big_orders": [
+        {"order_id": 1, "region": "North", "product": "A", "amount_inr": 30000}
+      ]}
+    }
+  ]
 }

@@ -91,9 +91,18 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
 
 ```bash
 miniflow validate examples/sales_report.json
+miniflow test examples/sales_report.json       # sample inputs and expected step results
 miniflow run examples/sales_report.json --environment dev
-miniflow ui --flows examples              # JSON flows appear next to the Python ones
+miniflow ui --flows examples                   # edit, validate, save and run in the browser
 ```
+
+Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
+searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+The **Flow tests** panel accepts sample results for selected steps and expected results for
+downstream steps. Tests run only the needed branch and leave the main run database untouched.
+A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declared `params`
+become settings, and its `outputs` become the result of that step. Inner steps remain visible
+in the run graph.
 
 ## Dashboard
 
@@ -128,7 +137,7 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 - **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
   and every run in the database. *Follow latest* jumps to new runs as they start.
 
-With `--flows DIR`, a control strip at the top lets you pick one of the `.py` flows in `DIR`,
+With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
 set a **fault rate** (passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
 you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
 interrupted run gets a **Resume this run** button, which reruns only its unfinished tasks. Each

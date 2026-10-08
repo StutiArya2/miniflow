@@ -331,6 +331,16 @@ body.studio-active #app > :not(#studio) { display: none !important; }
 .studio-inspector textarea { min-height: 76px; resize: vertical; font-family: var(--mono); }
 .studio-inspector .hint { font-weight: 400; }
 .studio-inspector .btn { margin-top: 8px; }
+.studio-test-panel { padding: 10px 14px; }
+.studio-test-panel summary { cursor: pointer; font-weight: 700; }
+.studio-test-panel summary .hint { font-weight: 400; margin-left: 8px; }
+#studio-test-editor { display: grid; gap: 12px; margin-top: 12px; }
+.studio-test-toolbar { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
+.studio-test-toolbar label { display: grid; gap: 4px; font-size: 12px; }
+.studio-test-toolbar select, .studio-test-toolbar input, .studio-test-row select, .studio-test-row textarea { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 7px; padding: 7px; font: inherit; }
+.studio-test-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; gap: 7px; align-items: start; margin: 7px 0; }
+.studio-test-row textarea { min-height: 52px; resize: vertical; font-family: var(--mono); }
+.studio-test-group h3 { font-size: 13px; margin: 8px 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 @media (max-width: 1000px) { .studio-layout { grid-template-columns: 170px minmax(0, 1fr); } .studio-inspector { grid-column: 1 / -1; } }
-@media (max-width: 640px) { .studio-layout { display: block; } .studio-palette { margin-bottom: 10px; } .studio-blocks { display: flex; overflow-x: auto; } .studio-block { min-width: 135px; } .studio-inspector { margin-top: 10px; } .studio-canvas-scroll { min-height: 420px; } }
+@media (max-width: 640px) { .studio-layout { display: block; } .studio-palette { margin-bottom: 10px; } .studio-blocks { display: flex; overflow-x: auto; } .studio-block { min-width: 135px; } .studio-inspector { margin-top: 10px; } .studio-canvas-scroll { min-height: 420px; } .studio-test-row { grid-template-columns: 1fr auto; } .studio-test-row textarea { grid-column: 1 / -1; grid-row: 2; } }

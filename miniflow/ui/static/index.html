@@ -35,9 +35,14 @@
         <button type="button" id="studio-new" class="btn">New</button>
         <label>Name <input id="studio-name" autocomplete="off" pattern="[A-Za-z_][-A-Za-z0-9_]*"></label>
         <button type="button" id="studio-validate" class="btn">Validate</button>
+        <button type="button" id="studio-test" class="btn">Test</button>
         <button type="button" id="studio-save" class="btn">Save</button>
         <button type="button" id="studio-run" class="btn primary">▶ Run</button>
       </div>
+      <details id="studio-test-panel" class="panel studio-test-panel">
+        <summary>Flow tests <span class="hint">Sample inputs and expected results</span></summary>
+        <div id="studio-test-editor"></div>
+      </details>
       <div class="studio-layout">
         <aside class="studio-palette panel">
           <h2>Blocks</h2>

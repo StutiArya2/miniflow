@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from miniflow.flowfile import FlowFileError
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
 from miniflow.ui.author import FlowWorkspace, WorkspaceError
@@ -207,13 +208,16 @@ class _Handler(BaseHTTPRequestHandler):
             if (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
-                and parts[2] in ("validate", "save")
+                and parts[2] in ("validate", "save", "test")
                 and self.server.workspace is not None
             ):
                 body = self._control_body(_MAX_FLOW_BODY)
                 name = _text(body, "name")
                 if "flow" not in body:
                     raise ControlError("flow is required", HTTPStatus.BAD_REQUEST)
+                if parts[2] == "test":
+                    self._send_json(self.server.workspace.test(name, body["flow"]))
+                    return
                 if parts[2] == "save":
                     result = self.server.workspace.save(name, body["flow"])
                     if result["valid"] and controller is not None:
@@ -260,6 +264,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(exc.status, str(exc))
         except WorkspaceError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        except FlowFileError as exc:
+            self._send_json({"problems": exc.problems}, HTTPStatus.BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
