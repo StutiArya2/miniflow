@@ -15,6 +15,7 @@ plugins:
 nav:
   - Home: index.md
   - Plan: PLAN.md
+  - Demo script: demo.md
   - Evaluation:
       - Findings: evaluation.md
       - Results: results/results.md

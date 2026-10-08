@@ -90,6 +90,19 @@ Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the 
 The server only binds to `127.0.0.1`. Without `--flows` it is read-only. With it, the control
 requests are only accepted from the dashboard page itself, and only name a flow in `DIR`.
 
+### Example: Ocean Watch
+
+`examples/ocean_watch.py` is a realistic job for demos: it scans 240 synthetic satellite
+radar tiles for oil spills and ships (12 parallel downloads on threads, 12 detection batches
+in separate processes, then a report and an alert) and writes
+`examples/ocean_watch_data/report.html`. The walkthrough for presenting it is in
+[`docs/demo.md`](docs/demo.md).
+
+```bash
+miniflow run examples/ocean_watch.py                    # about 6 s (10 s the first time)
+miniflow run examples/ocean_watch.py --cpu-workers 1    # about 24 s: why cpu tasks use processes
+```
+
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`
 injects failures (`MINIFLOW_FAIL_RATE`, default 0.4) and a hanging task with a timeout.
