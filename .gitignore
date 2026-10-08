@@ -14,6 +14,9 @@ htmlcov/
 .benchmarks/
 site/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.dot
 !docs/**/*.dot
+miniflow_reports/

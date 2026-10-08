@@ -76,6 +76,8 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT"]
 [tool.ruff.lint.per-file-ignores]
 # Report tables and figures use the real multiplication sign for speedups (×2.5).
 "benchmarks/*" = ["RUF001"]
+# Example pipelines carry long human-facing sentences (descriptions, report lines).
+"miniflow/examples/*" = ["E501", "RUF001"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -96,6 +98,10 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["miniflow"]
+# The bundled examples are exercised end to end by tests/test_examples.py (offline), but
+# their cpu steps run in worker processes that coverage cannot see, and their live-network
+# branches only run online, so they are left out of the coverage figure.
+omit = ["miniflow/examples/*"]
 branch = true
 
 [tool.coverage.report]

@@ -45,7 +45,8 @@ their results, even if it ignores them.
 | `store.py`      | ✅ done |
 | `scheduler.py`  | ✅ done |
 | `cli.py`        | ✅ `run`, `resume`, `status`, `graph`, `validate` |
-| `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: live graph, timeline, runs table |
+| `ui/` dashboard | ✅ `miniflow ui` and `run --ui`: Examples gallery, story, results, live graph, timeline |
+| `examples/`     | ✅ four real-world pipelines on live public data, with offline snapshots |
 | benchmarks      | ✅ `benchmarks/`: results in [`docs/results/results.md`](docs/results/results.md) |
 
 ## Running flows
@@ -58,12 +59,44 @@ miniflow resume examples/faulty_etl.py     # rerun, reusing tasks that already s
 miniflow graph examples/faulty_etl.py --render svg -o flow.svg   # coloured by the latest run
 ```
 
+## Real-world examples
+
+Four pipelines ship with MiniFlow. Each does a job people recognise, with **live public data**:
+
+| Example | What it does | Data |
+|---|---|---|
+| `earthquakes` | Live earthquake monitor: most active regions, alerts for magnitude 5+ | US Geological Survey live feeds |
+| `air_quality` | Air quality and best time to exercise outside for 8 Indian cities, with health alerts | Open-Meteo air-quality and weather forecasts |
+| `news_digest` | Morning digest of the Hacker News front page: reading time and topics of each article | Hacker News API + the articles themselves |
+| `shop_report` | An online shop's monthly sales in 7 currencies, converted to rupees, unusual days flagged | European Central Bank exchange rates (orders are sample data) |
+
+```bash
+miniflow examples                          # list them
+miniflow example air_quality --ui          # run one and watch it in the dashboard
+miniflow example news_digest --offline     # no internet: replay saved snapshots of real data
+```
+
+Reports and simulated alert or email messages are written to `miniflow_reports/`.
+`--offline` replays snapshots recorded from a real run, including its failures (a website
+that never answered fails the same way), so demos work without a network connection.
+
 ## Dashboard
 
 ```bash
+miniflow ui                                # open the dashboard: Examples gallery + every run
 miniflow run examples/faulty_etl.py --ui   # run with the dashboard open; it stays up until Ctrl+C
-miniflow ui                                # browse every run in miniflow.db (live, too)
 ```
+
+Made for people who have never seen a workflow engine:
+
+- **Examples gallery**: one card per real-world example with a plain-English description and a
+  **Run** button. Runs started there appear live.
+- **Story**: what the pipeline is for, what to watch for while it runs, and a short
+  "How to read this page" guide.
+- **What this run found**: the results of the pipeline's key steps in plain words, for example the
+  city ranking, the alerts sent or revenue by country.
+- **Step details**: what each step does, what it produced, every attempt and, for a failure, the
+  reason in one line (the Python traceback is folded away).
 
 A local web page at `http://127.0.0.1:8765` (the next free port if that one is taken), built
 only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
@@ -78,8 +111,15 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 - **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
   and every run in the database. *Follow latest* jumps to new runs as they start.
 
-Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends).
-The server only binds to `127.0.0.1` and is read-only.
+Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends),
+`--read-only` and `--offline` for `miniflow ui`. The server only binds to `127.0.0.1`. Its one
+write action is the gallery's Run button, which can start only the bundled examples, one at a
+time, and only from the dashboard's own page (other websites are refused). `--read-only`
+hides it; the dashboard started by `run --ui` is always read-only.
+
+**Optional steps:** `@task(optional=True)` marks a step the job can finish without. If it fails
+for good, the steps after it still run and receive `None` in its place, and the run still counts
+as a success. The news digest uses this so one slow website can't cancel the whole email.
 
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`

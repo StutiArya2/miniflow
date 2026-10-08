@@ -121,6 +121,25 @@ The spec only has a CLI and a Graphviz export. A live web dashboard makes the pr
 - Speedup is Σ attempt time ÷ wall time, so runs that mostly wait on retry backoff can show less than ×1. That is correct, and worth explaining in the viva.
 - Checked in the browser in light and dark mode and at phone width (375 px, no horizontal page scroll).
 
+### Phase 3.6: real-world examples in the dashboard
+Added so that people with no background in workflow engines understand what MiniFlow does.
+
+**Status: ✅ done.**
+- Four pipelines in `miniflow/examples/`, each a recognisable job using live public data: an earthquake monitor (USGS), an air-quality advisor for 8 Indian cities (Open-Meteo), a morning news digest (Hacker News), and an online shop's sales report (ECB exchange rates, sample orders). Commands: `miniflow examples` and `miniflow example <name> [--ui] [--offline] [--resume]`.
+- Offline mode replays gzip snapshots of a real run (226 KB), including its failures, so viva demos work without internet. `MINIFLOW_RECORD_SNAPSHOTS=1` refreshes them.
+- Library additions:
+  - `Task.description`, taken from the docstring.
+  - Flow `about` (title, story, `WATCH`, `HIGHLIGHTS`).
+  - Result previews: a task can return `{"summary": ...}`, stored in a new `task_states.preview` column, migrated automatically.
+  - `@task(optional=True)`: a failure doesn't skip downstream steps; they receive `None`.
+  - Typed `@task` overloads, so strict mypy sees a decorated function as a `Task`.
+- Dashboard:
+  - An Examples gallery with Run buttons. Only bundled examples, one at a time, same-origin checks, `--read-only` to hide them.
+  - A story panel with "How to read this page".
+  - "What this run found", showing the highlight steps' results.
+  - Step descriptions and results; the failure reason in one line, with the traceback folded.
+  - A hover explanation on the speedup card.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
