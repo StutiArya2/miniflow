@@ -850,6 +850,8 @@ function init() {
       if (S.control && (S.control.active || ticks % 3 === 0)) loadControl();
     }, 1000);
   });
+  loadExamples();
+  setInterval(loadExamples, 3000);
   const m = /run=([\w-]+)/.exec(location.hash);
   if (m) {
     setFollow(false);

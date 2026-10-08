@@ -82,6 +82,10 @@ def _parse_params(items: Sequence[str] | None) -> dict[str, str]:
 
 def _load(args: argparse.Namespace) -> tuple[str, DAG, Flow | None]:
     """``(flow name, DAG, Flow or None)`` for a ``.py`` or ``.json`` flow file."""
+    if getattr(args, "example", False):
+        from miniflow.examples import load
+
+        return args.flow, load(args.flow)[1], None
     path = Path(args.flow)
     params = _parse_params(getattr(args, "param", None))
     environment = getattr(args, "environment", None)
@@ -256,7 +260,11 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 
 # ------------------------------------------------------------------- commands
 def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
-    server = DashboardServer(args.db, port=args.port, flows=getattr(args, "flows", None)).start()
+    server = DashboardServer(
+        args.db, port=args.port, flows=getattr(args, "flows", None),
+        allow_run=not getattr(args, "read_only", False) and not getattr(args, "ui", False),
+        offline=getattr(args, "offline", False),
+    ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
         webbrowser.open(server.url)
@@ -272,16 +280,9 @@ def _serve_until_interrupted(server: DashboardServer) -> None:
         pass
 
 
-def _load(args: argparse.Namespace) -> tuple[DAG, str]:
-    """The DAG and flow name for a flow file, or for a bundled example (``miniflow example``)."""
-    if getattr(args, "example", False):
-        from miniflow.examples import load
-
-        return load(args.flow)[1], args.flow
-    return load_flow(args.flow)[1], Path(args.flow).stem
-
-
 def _execute(args: argparse.Namespace, resume: bool) -> int:
+    if getattr(args, "offline", False):
+        os.environ["MINIFLOW_OFFLINE"] = "1"
     flow, dag, spec = _load(args)
     server = _start_dashboard(args) if args.ui else None
     try:
@@ -606,6 +607,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="let the dashboard run, cancel and resume the flow files in this folder",
     )
+    u.add_argument("--read-only", action="store_true", help="hide the Examples gallery Run buttons")
+    u.add_argument("--offline", action="store_true", help="examples use saved data")
     dashboard_options(u)
     u.set_defaults(func=_cmd_ui)
 

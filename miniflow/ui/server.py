@@ -188,6 +188,20 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if len(parts) == 4 and parts[:2] == ["api", "examples"] and parts[3] == "run":
+                if not self.server.allow_run:
+                    self._send_error(HTTPStatus.FORBIDDEN, "this dashboard is read-only")
+                elif not self._same_origin():
+                    self._send_error(
+                        HTTPStatus.FORBIDDEN, "requests must come from the dashboard page"
+                    )
+                elif parts[2] not in self.server.example_names:
+                    self._send_error(HTTPStatus.NOT_FOUND, f"no example {parts[2]!r}")
+                elif not self.server.runner.start(parts[2]):
+                    self._send_error(HTTPStatus.CONFLICT, "an example is still running")
+                else:
+                    self._send_json({"started": parts[2]}, HTTPStatus.ACCEPTED)
+                return
             if (
                 controller is None
                 or len(parts) != 3
@@ -210,6 +224,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(exc.status, str(exc))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+
+    def _same_origin(self) -> bool:
+        hosts = self.server.hosts
+        origin = self.headers.get("Origin")
+        return (self.headers.get("Host", "").lower() in hosts
+                and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
+                and self.headers.get("X-MiniFlow-Action") == "run")
 
     def _control_body(self) -> dict[str, Any]:
         """Refuse requests that didn't come from the dashboard page, then parse the body."""
@@ -327,6 +348,9 @@ class DashboardServer(ThreadingHTTPServer):
         port: int = 8765,
         host: str = "127.0.0.1",
         flows: str | Path | None = None,
+        *,
+        allow_run: bool = False,
+        offline: bool = False,
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")

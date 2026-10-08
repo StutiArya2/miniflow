@@ -27,6 +27,10 @@
   </header>
 
   <main id="app">
+    <details class="panel gallery" id="gallery" open>
+      <summary><h2>Try a real-world example</h2><span class="hint" id="gallery-hint">Pick one and watch it run.</span></summary>
+      <div class="cards" id="example-cards"></div>
+    </details>
     <section id="control" class="panel control" aria-label="Run controls" hidden>
       <label class="field">Flow <select id="ctl-flow"></select></label>
       <label class="field" title="Sets MINIFLOW_FAIL_RATE for the run; only flows that read it are affected">
