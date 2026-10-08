@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import shutil
@@ -17,7 +18,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TextIO
 
+from miniflow.blocks import BlockError, all_blocks, get_block, load_plugins, type_name
 from miniflow.executors import ExecutorRouter
+from miniflow.flowfile import Flow, FlowFileError, load_json_flow
 from miniflow.graph import DAG, GraphError
 from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
@@ -61,6 +64,47 @@ def load_flow(path: str | Path) -> tuple[types.ModuleType, DAG]:
         sys.path.insert(0, str(p.parent))
     spec.loader.exec_module(module)
     return module, DAG.from_module(module)
+
+
+class _UsageError(Exception):
+    """A command-line mistake, reported as ``error: ...`` with exit code 2."""
+
+
+def _parse_params(items: Sequence[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            raise _UsageError(f"--param {item!r}: write it as NAME=VALUE")
+        out[name.strip()] = value
+    return out
+
+
+def _load(args: argparse.Namespace) -> tuple[str, DAG, Flow | None]:
+    """``(flow name, DAG, Flow or None)`` for a ``.py`` or ``.json`` flow file."""
+    path = Path(args.flow)
+    params = _parse_params(getattr(args, "param", None))
+    environment = getattr(args, "environment", None)
+    if path.suffix.lower() == ".json":
+        flow = load_json_flow(
+            path, params=params, environment=environment, blocks=getattr(args, "blocks", None) or ()
+        )
+        return flow.name, flow.dag, flow
+    if params or environment:
+        raise _UsageError("--param and --environment only apply to JSON flows")
+    _, dag = load_flow(path)
+    return path.stem, dag, None
+
+
+def _run_on_failure(flow: Flow, result: RunResult) -> None:
+    assert flow.on_failure is not None
+    name = flow.on_failure.get("block", "?")
+    try:
+        flow.run_on_failure(result)
+    except Exception as exc:
+        print(f"on_failure: {name} failed as well: {exc}", file=sys.stderr)
+    else:
+        print(f"on_failure: ran {name}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------- output
@@ -229,18 +273,22 @@ def _serve_until_interrupted(server: DashboardServer) -> None:
 
 
 def _execute(args: argparse.Namespace, resume: bool) -> int:
-    _, dag = load_flow(args.flow)
-    flow = Path(args.flow).stem
+    flow, dag, spec = _load(args)
     server = _start_dashboard(args) if args.ui else None
     try:
-        return _execute_with(args, resume, dag, flow, server)
+        return _execute_with(args, resume, dag, flow, server, spec)
     finally:
         if server is not None:
             server.stop()
 
 
 def _execute_with(
-    args: argparse.Namespace, resume: bool, dag: DAG, flow: str, server: DashboardServer | None
+    args: argparse.Namespace,
+    resume: bool,
+    dag: DAG,
+    flow: str,
+    server: DashboardServer | None,
+    spec: Flow | None = None,
 ) -> int:
     with StateStore(args.db) as store:
         previous = None
@@ -275,6 +323,8 @@ def _execute_with(
             print("note: timed-out tasks were abandoned while still running", file=sys.stderr)
     if not args.quiet:
         _summary(result)
+    if spec is not None and spec.on_failure is not None and result.status == "FAILED":
+        _run_on_failure(spec, result)
     if server is not None and args.ui_wait:
         _serve_until_interrupted(server)
     return {"SUCCESS": 0, "FAILED": 1}.get(result.status, 130)
@@ -341,11 +391,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_graph(args: argparse.Namespace) -> int:
-    _, dag = load_flow(args.flow)
+    name, dag, _ = _load(args)
     states: dict[str, str] | None = None
     if args.db and Path(args.db).exists():
         with StateStore(args.db) as store:
-            run_id = args.run or store.latest_run(Path(args.flow).stem)
+            run_id = args.run or store.latest_run(name)
             if run_id:
                 states = {k: v.value for k, v in store.get_states(run_id).items()}
     dot = dag.to_dot(states)
@@ -396,9 +446,44 @@ def _cmd_ui(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    _, dag = load_flow(args.flow)
+    _, dag, spec = _load(args)
     order = dag.topological_order()
-    print(f"OK: {len(dag)} tasks, order: {' -> '.join(order)}")
+    noun = "steps" if spec is not None else "tasks"
+    print(f"OK: {len(dag)} {noun}, order: {' -> '.join(order)}")
+    return 0
+
+
+def _default_text(value: Any) -> str:
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return repr(value)
+
+
+def _cmd_blocks(args: argparse.Namespace) -> int:
+    for folder in args.blocks or []:
+        load_plugins(folder)
+    if args.name:
+        spec = get_block(args.name)
+        print(f"{spec.name} ({spec.kind})\n  {spec.description}\n\nsettings:")
+        width = max((len(s.name) for s in spec.settings), default=4) + 2
+        for s in spec.settings:
+            need = "required" if s.required else f"default {_default_text(s.default)}"
+            extra = []
+            if s.choices:
+                extra.append("one of " + ", ".join(map(str, s.choices)))
+            if s.secret:
+                extra.append("secret: use {{ env.NAME }}")
+            if s.help:
+                extra.append(s.help)
+            print(f"  {s.name:<{width}}{type_name(s.type)}, {need}")
+            for line in extra:
+                print(f"  {'':<{width}}{line}")
+        return 0
+    blocks = all_blocks()
+    width = max(len(b.name) for b in blocks) + 2
+    for b in blocks:
+        print(f"{b.name:<{width}}{b.kind:<7}{b.description}")
     return 0
 
 
@@ -408,8 +493,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level", default="WARNING", help="Python logging level")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def flow_options(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--param",
+            action="append",
+            metavar="NAME=VALUE",
+            help="value for a JSON flow parameter (repeatable)",
+        )
+        p.add_argument("--environment", help="JSON flow environment: environments/NAME.json")
+        p.add_argument(
+            "--blocks", action="append", metavar="DIR", help="extra folder of plugin blocks"
+        )
+
     def run_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("flow", help="path to a Python file defining tasks")
+        p.add_argument("flow", help="flow file: Python (.py) or no-code JSON (.json)")
+        flow_options(p)
         p.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
         p.add_argument("--io-workers", type=int, default=8, help="thread pool size")
         p.add_argument(
@@ -458,7 +556,8 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=_cmd_status)
 
     g = sub.add_parser("graph", help="export the DAG in Graphviz DOT, coloured by the latest run")
-    g.add_argument("flow", help="path to a Python file defining tasks")
+    g.add_argument("flow", help="flow file: Python (.py) or no-code JSON (.json)")
+    flow_options(g)
     g.add_argument("-o", "--output", help="write to this file instead of stdout")
     g.add_argument("--db", default=DEFAULT_DB, help="colour nodes by states from this database")
     g.add_argument("--run", help="run id for colours (default: latest run of this flow)")
@@ -477,7 +576,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("validate", help="check the DAG and print a topological order")
     v.add_argument("flow")
+    flow_options(v)
     v.set_defaults(func=_cmd_validate)
+
+    b = sub.add_parser("blocks", help="list the blocks for JSON flows, or describe one")
+    b.add_argument("name", nargs="?", help="block to describe")
+    b.add_argument("--blocks", action="append", metavar="DIR", help="extra folder of plugin blocks")
+    b.set_defaults(func=_cmd_blocks)
     return parser
 
 
@@ -500,6 +605,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     func: Callable[[argparse.Namespace], int] = args.func
     try:
         return int(func(args))
-    except GraphError as exc:
+    except (GraphError, FlowFileError, BlockError, _UsageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -1,7 +1,8 @@
 """Start, cancel and resume runs from the dashboard (standard library only).
 
-``RunController(flows_dir, store)`` lets the dashboard launch the ``*.py`` flow
-files in one folder; files whose name starts with ``_`` are left out. Requests
+``RunController(flows_dir, store)`` lets the dashboard launch the flow files in
+one folder: Python flows (``*.py``) and no-code flows (``*.json``); files whose name
+starts with ``_`` are left out. Requests
 only ever name a flow from that folder or a run id from the store, never a path.
 
 Each run is a separate ``python -m miniflow run|resume <file> --db <db> --quiet``
@@ -106,11 +107,12 @@ class RunController:
         folder = Path(flows_dir)
         if not folder.is_dir():
             raise NotADirectoryError(f"flows folder {folder} doesn't exist")
-        self.flows = {
-            p.stem: p.resolve()
-            for p in sorted(folder.glob("*.py"))
-            if p.is_file() and not p.name.startswith("_")
-        }
+        files = sorted([*folder.glob("*.py"), *folder.glob("*.json")], key=lambda p: p.name)
+        self.flows: dict[str, Path] = {}
+        for p in files:
+            if p.is_file() and not p.name.startswith("_"):
+                self.flows.setdefault(p.stem, p.resolve())  # a .py and .json of one name: .json
+        self.flows = dict(sorted(self.flows.items()))
         self.store = store
         self.db = str(Path(store.path).resolve())
         self.grace = grace

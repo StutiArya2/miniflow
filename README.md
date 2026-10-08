@@ -58,6 +58,42 @@ miniflow resume examples/faulty_etl.py     # rerun, reusing tasks that already s
 miniflow graph examples/faulty_etl.py --render svg -o flow.svg   # coloured by the latest run
 ```
 
+## No-code flows (JSON)
+
+A flow can also be a JSON file of configured **blocks**, with no Python to write. It runs
+on the same scheduler, so retries, resume and the dashboard work the same way.
+
+```json
+{
+  "params": {"min": {"type": "float", "default": 100}},
+  "steps": {
+    "sales": {"block": "read_csv", "settings": {"path": "data/sales.csv"}},
+    "big":   {"block": "filter", "settings": {"rows": "{{ sales }}", "where": "amount > {{ params.min }}"}},
+    "save":  {"block": "write_csv", "settings": {"rows": "{{ big }}", "path": "out/big.csv"}, "retries": 2}
+  },
+  "on_failure": {"block": "log", "settings": {"message": "failed at {{ failure.step }}", "level": "error"}}
+}
+```
+
+- **Placeholders** fill settings in when the step runs: `{{ step }}` (a step's result, which
+  also makes this step wait for it), `{{ step.field.0 }}`, `{{ rows.count }}`,
+  `{{ params.name }}` and `{{ env.NAME }}` (secrets come only from environment variables).
+- **14 built-in blocks**: `http_request`, `read_csv`, `write_csv`, `read_json`, `write_json`,
+  `filter`, `select`, `aggregate`, `sort`, `shell`, `sql`, `email`, `log`, `wait`.
+  `miniflow blocks` lists them and `miniflow blocks filter` describes one.
+- **Plugin blocks**: a `@block` function in a `blocks/` folder next to the flow (see
+  `examples/blocks/currency.py`) is available to every flow in that folder.
+- **Parameters and environments**: `--param min=50`, or `--environment prod` for the values
+  in `environments/prod.json` (and secrets from `environments/prod.env`).
+- **Checked before running**: every problem is reported at once, in plain language, with
+  suggestions for misspelt names.
+
+```bash
+miniflow validate examples/sales_report.json
+miniflow run examples/sales_report.json --environment dev
+miniflow ui --flows examples              # JSON flows appear next to the Python ones
+```
+
 ## Dashboard
 
 ```bash

@@ -27,3 +27,5 @@ nav:
       - Store: api/store.md
       - Scheduler: api/scheduler.md
       - Dashboard: api/ui.md
+      - Flow files: api/flowfile.md
+      - Blocks: api/blocks.md

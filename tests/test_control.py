@@ -269,3 +269,26 @@ def test_resume_of_a_flow_outside_the_folder_is_rejected(controller, store):
         controller.resume(run_id, 0.0)
     assert err.value.status == HTTPStatus.NOT_FOUND
     assert "elsewhere" in str(err.value)
+
+
+def test_json_flows_are_listed_and_run(tmp_path, store):
+    folder = tmp_path / "jflows"
+    folder.mkdir()
+    (folder / "hello.json").write_text(
+        '{"steps": {"say": {"block": "log",'
+        ' "settings": {"message": "rate {{ env.MINIFLOW_FAIL_RATE }}"}}}}',
+        encoding="utf-8",
+    )
+    (folder / "old.py").write_text(
+        "from miniflow import task\n\n@task\ndef t():\n    return 1\n", "utf-8"
+    )
+    c = RunController(folder, store, grace=0.5)
+    try:
+        assert c.status()["flows"] == ["hello", "old"]
+        c.start("hello", 0.5)
+        wait_until(lambda: idle(c))
+        run_id = run_of(store, "hello")
+        assert status_of(store, run_id) == "SUCCESS"
+        assert store.load_completed(run_id) == {"say": {"level": "info", "message": "rate 0.5"}}
+    finally:
+        c.shutdown()

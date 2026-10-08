@@ -134,6 +134,17 @@ So the whole viva demo (fail, cancel, resume) can be driven from the browser ins
 - Resume is a fixed button in the control strip, not part of the run header, which is redrawn every 0.5 s during a run and every 3 s otherwise; a redrawn button can lose a click.
 - Known and unchanged: after an interrupt the tasks that were running keep the RUNNING state (the scheduler's interrupt path doesn't update them), so the graph still shows them as running. Resume reruns them as usual.
 
+### V1 milestone 1: no-code engine (JSON flows and blocks)
+Roadmap and research: `docs/superpowers/specs/2026-10-08-v1-roadmap.md`; design:
+`docs/superpowers/specs/2026-10-08-v1-m1-engine-design.md`.
+
+**Status: ✅ done.** JSON flows compile to ordinary tasks, so `scheduler.py`, `store.py`,
+`executors.py` and `graph.py` are unchanged. Notes:
+- Each step's task function is `miniflow.blocks.runtime.run_step` (or `run_step_async`), and the step's configuration travels in the task's kwargs as plain data, so cpu steps run in worker processes; plugin blocks are re-imported there from their module reference.
+- The loader reports every problem at once, with "Did you mean" suggestions; secrets must come from `{{ env.NAME }}` and are masked as `••••` in errors.
+- `filter` conditions are parsed with `ast` and evaluated by walking the tree (no `eval`), with a whitelist of operators and functions.
+- `on_failure` runs in the CLI after a FAILED run (so also for dashboard runs), not as a DAG step.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
