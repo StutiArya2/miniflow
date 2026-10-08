@@ -202,3 +202,4 @@ def test_store_adds_preview_column_to_old_databases(tmp_path):
     with StateStore(db) as store:
         cols = {r[1] for r in store._conn.execute("PRAGMA table_info(task_states)")}
     assert "preview" in cols
+    assert {"sample", "item_count"} <= cols

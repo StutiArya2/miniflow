@@ -325,6 +325,7 @@ function openStream(runId, since) {
     failures = 0;
     updateGraph();
     renderOutcome();
+    renderProblems();
     renderSummary();
     renderDetails();
     renderTimeline();
@@ -372,6 +373,7 @@ function startPolling(runId) {
 function renderAll() {
   renderStory();
   renderOutcome();
+  renderProblems();
   renderMeta();
   renderSummary();
   updateGraph();
@@ -702,9 +704,13 @@ function renderDetails() {
     h("div", {}, pill(t.state), " ", h("span", { class: "muted" }, `${info.kind} worker${info.optional ? " · optional step" : ""}`)),
     info.description ? [h("div", { class: "section-title" }, "What this step does"), h("p", { class: "desc" }, info.description)] : null,
     t.preview ? [h("div", { class: "section-title" }, t.from_cache ? "Result (reused from the previous run)" : "Result"), h("pre", { class: "preview box" }, t.preview)] : null,
+    t.sample !== null && t.sample !== undefined && typeof t.sample === "object" ? [
+      h("div", { class: "section-title" }, "Sample output"), renderSample(t.sample, t.item_count),
+    ] : null,
     h("dl", { class: "kv" },
       h("dt", {}, "Attempts"), h("dd", {}, String(t.attempts || 0)),
       h("dt", {}, "Duration"), h("dd", {}, took === null ? "–" : fmtDur(took)),
+      h("dt", {}, "Items"), h("dd", {}, t.item_count == null ? "–" : String(t.item_count)),
       h("dt", {}, "Started"), h("dd", {}, fmtClock(t.started_at)),
       h("dt", {}, "Saved"), h("dd", {}, t.from_cache ? "reused from the previous run" : t.has_result ? "yes, kept for resume" : t.state === "SUCCESS" ? "no (reruns on resume)" : "–"),
       h("dt", {}, "Upstream"), h("dd", {}, info.after.length ? h("div", { class: "links" }, info.after.map(link)) : "none (root)"),
@@ -724,6 +730,32 @@ function renderDetails() {
       a.error ? h("pre", { class: "error" }, firstLine(a.error)) : null)),
   ];
   body.replaceChildren(...parts.flat(Infinity).filter(Boolean));
+}
+
+function renderSample(sample, count) {
+  if (Array.isArray(sample) && sample.length && sample[0] && typeof sample[0] === "object" && !Array.isArray(sample[0])) {
+    const rows = sample.filter((row) => row && typeof row === "object" && !Array.isArray(row));
+    const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+    const table = h("table", { class: "sample-table" },
+      h("thead", {}, h("tr", {}, columns.map((key) => h("th", {}, key)))),
+      h("tbody", {}, rows.map((row) => h("tr", {}, columns.map((key) =>
+        h("td", {}, typeof row[key] === "string" ? row[key] : JSON.stringify(row[key] ?? null)))))));
+    return h("div", { class: "sample-scroll" }, table,
+      count != null ? h("p", { class: "hint" }, `Showing ${rows.length} of ${count} items`) : null);
+  }
+  return h("pre", { class: "preview box" }, JSON.stringify(sample, null, 2));
+}
+
+function renderProblems() {
+  const box = $("run-problems");
+  const problems = [...S.tasks.values()].filter((task) => task.state === "FAILED" || task.state === "SKIPPED");
+  box.hidden = problems.length === 0;
+  if (!problems.length) return;
+  $("run-problems-body").replaceChildren(...problems.map((task) =>
+    h("div", { class: "problem-row" },
+      h("button", { type: "button", class: "link", onclick: () => select(task.task) }, task.task),
+      pill(task.state),
+      h("span", {}, firstLine(task.error) || (task.state === "SKIPPED" ? "Skipped after an earlier failure" : "Step failed")))));
 }
 
 // ---------------------------------------------------------------- examples
