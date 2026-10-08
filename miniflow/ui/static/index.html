@@ -27,10 +27,27 @@
   </header>
 
   <main id="app">
+    <section id="control" class="panel control" aria-label="Run controls" hidden>
+      <label class="field">Flow <select id="ctl-flow"></select></label>
+      <label class="field" title="Sets MINIFLOW_FAIL_RATE for the run; only flows that read it are affected">
+        Fault rate
+        <input type="range" id="ctl-rate" min="0" max="100" step="5" value="40">
+        <output id="ctl-rate-value" for="ctl-rate">40%</output>
+      </label>
+      <button type="button" id="ctl-run" class="btn primary">▶ Run</button>
+      <button type="button" id="ctl-resume" class="btn" hidden>↻ Resume this run</button>
+      <span id="ctl-active" class="ctl-active" aria-live="polite" hidden></span>
+      <button type="button" id="ctl-cancel" class="btn danger" hidden>■ Cancel</button>
+      <pre id="ctl-error" class="error ctl-error" role="alert" hidden></pre>
+    </section>
+
     <section id="empty" class="empty" hidden>
       <h1>No runs yet</h1>
-      <p>Start one and it will appear here live:</p>
-      <pre><code>miniflow run examples/pipeline.py --ui</code></pre>
+      <div id="empty-cli">
+        <p>Start one and it will appear here live:</p>
+        <pre><code>miniflow run examples/pipeline.py --ui</code></pre>
+      </div>
+      <p id="empty-control" hidden>Pick a flow above and press <strong>▶ Run</strong>.</p>
       <p class="muted" id="empty-db"></p>
     </section>
 

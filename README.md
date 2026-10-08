@@ -63,6 +63,7 @@ miniflow graph examples/faulty_etl.py --render svg -o flow.svg   # coloured by t
 ```bash
 miniflow run examples/faulty_etl.py --ui   # run with the dashboard open; it stays up until Ctrl+C
 miniflow ui                                # browse every run in miniflow.db (live, too)
+miniflow ui --flows examples               # ...and start, cancel and resume runs from the page
 ```
 
 A local web page at `http://127.0.0.1:8765` (the next free port if that one is taken), built
@@ -78,8 +79,16 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 - **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
   and every run in the database. *Follow latest* jumps to new runs as they start.
 
+With `--flows DIR`, a control strip at the top lets you pick one of the `.py` flows in `DIR`,
+set a **fault rate** (passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
+you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
+interrupted run gets a **Resume this run** button, which reruns only its unfinished tasks. Each
+run is a separate `miniflow run`/`resume` process writing to the same database, and one runs at
+a time. Stopping the dashboard cancels the run it started.
+
 Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends).
-The server only binds to `127.0.0.1` and is read-only.
+The server only binds to `127.0.0.1`. Without `--flows` it is read-only. With it, the control
+requests are only accepted from the dashboard page itself, and only name a flow in `DIR`.
 
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`

@@ -220,6 +220,27 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13px; }
 .mini { display: inline-flex; width: 90px; height: 8px; border-radius: 999px; overflow: hidden; background: var(--pending); vertical-align: middle; margin-right: 8px; }
 .mini span { height: 100%; }
 
+/* ------------------------------------------------------------- controls */
+.control { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; }
+.control .field { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.control select {
+  font: inherit; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px;
+}
+.control input[type="range"] { width: 150px; accent-color: var(--accent); }
+.control output { min-width: 4ch; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.btn {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel-2); font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { background: var(--failed); border-color: var(--failed-line); color: var(--failed-ink); }
+.ctl-active { color: var(--muted); }
+.ctl-active strong { color: var(--text); font-family: var(--mono); }
+.ctl-error { flex-basis: 100%; margin: 0; max-height: 12em; }
+
 /* ---------------------------------------------------------------- empty */
 .empty { text-align: center; padding: 48px 16px; }
 .empty pre { display: inline-block; text-align: left; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }

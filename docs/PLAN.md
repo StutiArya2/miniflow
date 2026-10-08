@@ -121,6 +121,19 @@ The spec only has a CLI and a Graphviz export. A live web dashboard makes the pr
 - Speedup is Σ attempt time ÷ wall time, so runs that mostly wait on retry backoff can show less than ×1. That is correct, and worth explaining in the viva.
 - Checked in the browser in light and dark mode and at phone width (375 px, no horizontal page scroll).
 
+### Phase 3.6: dashboard controls (`miniflow ui --flows DIR`)
+So the whole viva demo (fail, cancel, resume) can be driven from the browser instead of a terminal.
+
+- `miniflow/ui/control.py`: `RunController` lists `DIR/*.py` (skipping `_*.py`) and launches each run as its own `python -m miniflow run|resume <file> --db <db> --quiet` process, with `MINIFLOW_FAIL_RATE` from the page. Using a separate process keeps `scheduler.py` unchanged, gives every run a fresh import (so module-level flow settings behave as in a terminal), and a crashing flow can't take the dashboard down.
+- One run at a time. Cancel sends the process group SIGINT (Ctrl+Break on Windows, which `cli.entry` turns into `KeyboardInterrupt`), so the scheduler's own interrupt path marks the run INTERRUPTED. After 5 s the group is killed and the controller marks the run INTERRUPTED itself; it does the same, and reports an error, when a run's process dies mid-run.
+- `ui/server.py`: `GET /api/control` and `POST /api/control/{run,resume,cancel}` exist only with `--flows`. A POST is refused unless its `Host` and `Origin` are the dashboard and its body is JSON (≤ 4 KB), so other web pages can't start runs.
+
+**Status: ✅ done.** Notes from building it:
+- Checked in the browser: run at 100% fault rate, cancel mid-run (INTERRUPTED), resume at 0% (SUCCESS, finished tasks reused), a refused request's error in the strip, and the unchanged read-only page without `--flows`.
+- `/api/runs` replies can arrive out of order, so a reply sent before a run existed briefly showed "No runs yet" during the run. The page now ignores replies to all but its newest request.
+- Resume is a fixed button in the control strip, not part of the run header, which is redrawn every 0.5 s during a run and every 3 s otherwise; a redrawn button can lose a click.
+- Known and unchanged: after an interrupt the tasks that were running keep the RUNNING state (the scheduler's interrupt path doesn't update them), so the graph still shows them as running. Resume reruns them as usual.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.

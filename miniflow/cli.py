@@ -7,6 +7,7 @@ import importlib.util
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -211,7 +212,7 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 
 # ------------------------------------------------------------------- commands
 def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
-    server = DashboardServer(args.db, port=args.port).start()
+    server = DashboardServer(args.db, port=args.port, flows=getattr(args, "flows", None)).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
         webbrowser.open(server.url)
@@ -382,7 +383,11 @@ def _cmd_ui(args: argparse.Namespace) -> int:
             f"note: {args.db} doesn't exist yet; runs will appear once you start one",
             file=sys.stderr,
         )
-    server = _start_dashboard(args)
+    try:
+        server = _start_dashboard(args)
+    except NotADirectoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     try:
         _serve_until_interrupted(server)
     finally:
@@ -462,6 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     u = sub.add_parser("ui", help="serve the dashboard for a state database")
     u.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    u.add_argument(
+        "--flows",
+        metavar="DIR",
+        help="let the dashboard run, cancel and resume the flow files in this folder",
+    )
     dashboard_options(u)
     u.set_defaults(func=_cmd_ui)
 
@@ -473,6 +483,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def entry() -> None:
     """Console-script entry point (``miniflow`` / ``python -m miniflow``)."""
+    if sys.platform == "win32":
+        # The dashboard cancels a run with Ctrl+Break (miniflow.ui.control); treat it as Ctrl+C.
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     code = main()
     if _abandoned_work:
         sys.stdout.flush()

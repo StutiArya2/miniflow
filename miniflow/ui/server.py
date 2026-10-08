@@ -1,17 +1,28 @@
-"""Read-only dashboard server (standard library only).
+"""Dashboard server (standard library only).
 
-Endpoints (all ``GET``):
+Endpoints:
 
-``/``                          the single-page dashboard
-``/static/<file>``             its CSS and JavaScript (package data)
-``/api/runs``                  recent runs with a count of tasks per state
-``/api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
-``/api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /``                          the single-page dashboard
+``GET /static/<file>``             its CSS and JavaScript (package data)
+``GET /api/runs``                  recent runs with a count of tasks per state
+``GET /api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
+``GET /api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /api/control``               flows the dashboard can start and the active run
+``POST /api/control/run``          ``{"flow": name, "fail_rate": 0..1}``: start a run
+``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
+``POST /api/control/cancel``       ``{}``: stop the active run
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
 scheduler writes. It works while a run is in progress (in the same process
 with ``miniflow run --ui`` or in another one with ``miniflow ui``) and after it.
-It binds to ``127.0.0.1`` and cannot change anything.
+It binds to ``127.0.0.1``. It is read-only unless it is given a ``flows`` folder
+(``miniflow ui --flows DIR``); only then do the ``/api/control`` endpoints exist,
+backed by a :class:`~miniflow.ui.control.RunController`.
+
+A control request is refused unless its ``Host`` is this server, its ``Origin``
+(if sent) is this server, and its body is JSON of at most 4 KB. Browsers don't
+send JSON to another site without asking the server first, and this server never
+agrees, so other web pages can't start runs.
 """
 
 from __future__ import annotations
@@ -30,6 +41,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
+from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
 
 __all__ = ["DashboardServer"]
@@ -44,6 +56,8 @@ _STATIC = {
 _POLL_SECONDS = 0.25
 _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
+_MAX_BODY = 4096
+_ACTIONS = ("run", "resume", "cancel")
 
 
 def _static(name: str) -> bytes:
@@ -116,10 +130,67 @@ class _Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "events":
                 since = float(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 self._stream(parts[2], since)
+            elif parts == ["api", "control"] and self.server.controller is not None:
+                self._send_json(self.server.controller.status())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # the browser went away
+
+    def do_POST(self) -> None:
+        self.close_connection = True  # a refused request's body is never read
+        parts = [p for p in urlsplit(self.path).path.split("/") if p]
+        controller = self.server.controller
+        try:
+            if (
+                controller is None
+                or len(parts) != 3
+                or parts[:2] != ["api", "control"]
+                or parts[2] not in _ACTIONS
+            ):
+                self._send_error(HTTPStatus.NOT_FOUND, "not found")
+                return
+            body = self._control_body()
+            if parts[2] == "run":
+                active = controller.start(_text(body, "flow"), body.get("fail_rate"))
+                self._send_json(active, HTTPStatus.ACCEPTED)
+            elif parts[2] == "resume":
+                active = controller.resume(_text(body, "run_id"), body.get("fail_rate"))
+                self._send_json(active, HTTPStatus.ACCEPTED)
+            else:
+                controller.cancel()
+                self._send_json(controller.status())
+        except ControlError as exc:
+            self._send_error(exc.status, str(exc))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _control_body(self) -> dict[str, Any]:
+        """Refuse requests that didn't come from the dashboard page, then parse the body."""
+        hosts = self.server.hosts
+        if self.headers.get("Host", "").lower() not in hosts:
+            raise ControlError("unexpected Host header", HTTPStatus.FORBIDDEN)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {f"http://{h}" for h in hosts}:
+            raise ControlError("requests from other sites are not allowed", HTTPStatus.FORBIDDEN)
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            raise ControlError("the body must be JSON", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            raise ControlError("Content-Length is required", HTTPStatus.LENGTH_REQUIRED) from None
+        if not 0 <= length <= _MAX_BODY:
+            raise ControlError(
+                f"the body is over {_MAX_BODY} bytes", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            )
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            raise ControlError("the body is not valid JSON", HTTPStatus.BAD_REQUEST) from None
+        if not isinstance(body, dict):
+            raise ControlError("the body must be a JSON object", HTTPStatus.BAD_REQUEST)
+        return body
 
     # --------------------------------------------------------------- replies
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
@@ -185,21 +256,41 @@ class _Handler(BaseHTTPRequestHandler):
         self._last_write = time.monotonic()
 
 
+def _text(body: dict[str, Any], key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str):
+        raise ControlError(f"{key} must be a string", HTTPStatus.BAD_REQUEST)
+    return value
+
+
 class DashboardServer(ThreadingHTTPServer):
     """``DashboardServer(db_path, port=8765).start()`` serves in a background thread.
 
     If ``port`` is taken, the next free port (up to ``port + 20``) is used; pass
     ``port=0`` for any free port. :attr:`url` gives the address actually bound.
+    With ``flows=DIR`` the dashboard can also start, cancel and resume runs of the
+    flow files in ``DIR``; :meth:`stop` then cancels the run it started, if any.
     """
 
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, db: str | Path, port: int = 8765, host: str = "127.0.0.1") -> None:
+    def __init__(
+        self,
+        db: str | Path,
+        port: int = 8765,
+        host: str = "127.0.0.1",
+        flows: str | Path | None = None,
+    ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
         self.store = StateStore(db)
         self.api = _Api(self.store)
+        try:
+            self.controller = None if flows is None else RunController(flows, self.store)
+        except OSError:
+            self.store.close()
+            raise
         self.stopping = threading.Event()
         self._thread: threading.Thread | None = None
         last_error: OSError | None = None
@@ -218,6 +309,12 @@ class DashboardServer(ThreadingHTTPServer):
         host, port = self.server_address[:2]
         return f"http://{host!s}:{port}"
 
+    @property
+    def hosts(self) -> set[str]:
+        """``Host`` header values that address this server."""
+        host, port = self.server_address[:2]
+        return {f"{host!s}:{port}", f"localhost:{port}"}
+
     def start(self) -> DashboardServer:
         self._thread = threading.Thread(
             target=self.serve_forever,
@@ -229,6 +326,8 @@ class DashboardServer(ThreadingHTTPServer):
         return self
 
     def stop(self) -> None:
+        if self.controller is not None:
+            self.controller.shutdown()
         self.stopping.set()
         if self._thread is not None:
             self.shutdown()
