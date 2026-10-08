@@ -27,7 +27,7 @@ import inspect
 import pickle
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeAlias, get_args
+from typing import Any, Literal, TypeAlias, get_args, overload
 
 __all__ = ["KINDS", "Kind", "Task", "TaskDefinitionError", "task"]
 
@@ -57,6 +57,12 @@ class Task:
     timeout: float | None = None
     args: tuple[Any, ...] = ()
     kwargs: Mapping[str, Any] = field(default_factory=dict)
+    #: Plain-English explanation of the step, shown by the CLI and the dashboard.
+    #: Defaults to the first paragraph of the function's docstring.
+    description: str = ""
+    #: If True, a permanent failure of this task does not skip the tasks after it:
+    #: they still run and receive ``None`` in place of its result.
+    optional: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -118,6 +124,8 @@ class Task:
             self.timeout,
             self.args,
             dict(self.kwargs),
+            self.description,
+            self.optional,
         )
         return (_rebuild_task, (module, qualname, fields))
 
@@ -140,7 +148,17 @@ def _rebuild_task(module: str, qualname: str, fields: tuple[Any, ...]) -> Task:
     obj = _lookup(module, qualname)
     fn = obj.fn if isinstance(obj, Task) else obj
     t = object.__new__(Task)
-    names = ("name", "kind", "after", "retries", "timeout", "args", "kwargs")
+    names = (
+        "name",
+        "kind",
+        "after",
+        "retries",
+        "timeout",
+        "args",
+        "kwargs",
+        "description",
+        "optional",
+    )
     object.__setattr__(t, "fn", fn)
     for name, value in zip(names, fields, strict=True):
         object.__setattr__(t, name, value)
@@ -169,12 +187,50 @@ def _check_importable(t: Task) -> None:
         ) from exc
 
 
+def first_paragraph(doc: str | None) -> str:
+    """The first paragraph of a docstring, joined onto one line."""
+    text = inspect.cleandoc(doc or "")
+    return " ".join(text.split("\n\n", 1)[0].split())
+
+
 def _dep_name(dep: Dependency) -> str:
     if isinstance(dep, Task):
         return dep.name
     if isinstance(dep, str):
         return dep
     raise TaskDefinitionError(f"dependencies must be tasks or task names, got {dep!r}")
+
+
+@overload
+def task(
+    fn: Callable[..., Any],
+    *,
+    kind: Kind = ...,
+    after: Iterable[Dependency] = ...,
+    retries: int = ...,
+    timeout: float | None = ...,
+    name: str | None = ...,
+    args: Iterable[Any] = ...,
+    kwargs: Mapping[str, Any] | None = ...,
+    description: str | None = ...,
+    optional: bool = ...,
+) -> Task: ...
+
+
+@overload
+def task(
+    fn: None = None,
+    *,
+    kind: Kind = ...,
+    after: Iterable[Dependency] = ...,
+    retries: int = ...,
+    timeout: float | None = ...,
+    name: str | None = ...,
+    args: Iterable[Any] = ...,
+    kwargs: Mapping[str, Any] | None = ...,
+    description: str | None = ...,
+    optional: bool = ...,
+) -> Callable[[Callable[..., Any]], Task]: ...
 
 
 def task(
@@ -187,7 +243,9 @@ def task(
     name: str | None = None,
     args: Iterable[Any] = (),
     kwargs: Mapping[str, Any] | None = None,
-) -> Any:
+    description: str | None = None,
+    optional: bool = False,
+) -> Task | Callable[[Callable[..., Any]], Task]:
     """Declare a task. Usable bare (``@task``) or with options (``@task(kind="cpu")``)."""
 
     def wrap(f: Callable[..., Any]) -> Task:
@@ -200,6 +258,8 @@ def task(
             timeout=timeout,
             args=tuple(args),
             kwargs=dict(kwargs or {}),
+            description=description if description is not None else first_paragraph(f.__doc__),
+            optional=optional,
         )
 
     return wrap(fn) if fn is not None else wrap

@@ -210,8 +210,10 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 
 
 # ------------------------------------------------------------------- commands
-def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
-    server = DashboardServer(args.db, port=args.port).start()
+def _start_dashboard(args: argparse.Namespace, allow_run: bool = False) -> DashboardServer:
+    server = DashboardServer(
+        args.db, port=args.port, allow_run=allow_run, offline=getattr(args, "offline", False)
+    ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
         webbrowser.open(server.url)
@@ -227,9 +229,19 @@ def _serve_until_interrupted(server: DashboardServer) -> None:
         pass
 
 
+def _load(args: argparse.Namespace) -> tuple[DAG, str]:
+    """The DAG and flow name for a flow file, or for a bundled example (``miniflow example``)."""
+    if getattr(args, "example", False):
+        from miniflow.examples import load
+
+        return load(args.flow)[1], args.flow
+    return load_flow(args.flow)[1], Path(args.flow).stem
+
+
 def _execute(args: argparse.Namespace, resume: bool) -> int:
-    _, dag = load_flow(args.flow)
-    flow = Path(args.flow).stem
+    if getattr(args, "offline", False):
+        os.environ["MINIFLOW_OFFLINE"] = "1"  # read by the examples; inherited by workers
+    dag, flow = _load(args)
     server = _start_dashboard(args) if args.ui else None
     try:
         return _execute_with(args, resume, dag, flow, server)
@@ -376,13 +388,28 @@ def _render(dot: str, fmt: str, output: str | None) -> int:
     return 0
 
 
+def _cmd_example(args: argparse.Namespace) -> int:
+    return _execute(args, resume=args.resume)
+
+
+def _cmd_examples(args: argparse.Namespace) -> int:
+    from miniflow.examples import catalog
+
+    for ex in catalog():
+        k = ex["kinds"]
+        print(f"{ex['name']:<13} {ex['title']}")
+        print(f"{'':<13} {ex['tasks']} steps ({k['io']} io, {k['cpu']} cpu, {k['async']} async)")
+        print(f"{'':<13} miniflow example {ex['name']} --ui\n")
+    return 0
+
+
 def _cmd_ui(args: argparse.Namespace) -> int:
     if not Path(args.db).exists():
         print(
             f"note: {args.db} doesn't exist yet; runs will appear once you start one",
             file=sys.stderr,
         )
-    server = _start_dashboard(args)
+    server = _start_dashboard(args, allow_run=not args.read_only)
     try:
         _serve_until_interrupted(server)
     finally:
@@ -404,7 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def run_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("flow", help="path to a Python file defining tasks")
+        p.add_argument("flow", help="path to a flow file (for `example`: the example's name)")
         p.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
         p.add_argument("--io-workers", type=int, default=8, help="thread pool size")
         p.add_argument(
@@ -421,6 +448,9 @@ def build_parser() -> argparse.ArgumentParser:
             "-v", "--verbose", action="store_true", help="also show PENDING/READY changes"
         )
         p.add_argument("-q", "--quiet", action="store_true", help="no progress output")
+        p.add_argument(
+            "--offline", action="store_true", help="examples: use saved real data, no internet"
+        )
         p.add_argument("--ui", action="store_true", help="serve the live dashboard during the run")
         p.add_argument(
             "--ui-wait",
@@ -460,8 +490,22 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--render", choices=["png", "svg", "pdf"], help="render an image with Graphviz")
     g.set_defaults(func=_cmd_graph)
 
+    ex = sub.add_parser("example", help="run a bundled real-world example pipeline")
+    run_options(ex)
+    ex.add_argument("--resume", action="store_true", help="reuse results of the latest run")
+    ex.set_defaults(func=_cmd_example, example=True, run=None)
+
+    exs = sub.add_parser("examples", help="list the bundled example pipelines")
+    exs.set_defaults(func=_cmd_examples)
+
     u = sub.add_parser("ui", help="serve the dashboard for a state database")
     u.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    u.add_argument(
+        "--read-only", action="store_true", help="hide the Run buttons of the Examples gallery"
+    )
+    u.add_argument(
+        "--offline", action="store_true", help="examples started from the page use saved data"
+    )
     dashboard_options(u)
     u.set_defaults(func=_cmd_ui)
 

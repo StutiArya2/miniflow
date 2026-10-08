@@ -250,3 +250,74 @@ def test_ui_command(tmp_path, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "doesn't exist yet" in err
     assert "dashboard: http://127.0.0.1:" in err
+
+
+# ------------------------------------------------------------ examples gallery
+def post(server: DashboardServer, path: str, headers: dict[str, str] | None = None):
+    url = urlsplit(server.url)
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    try:
+        conn.request("POST", path, body=b"", headers=headers or {})
+        res = conn.getresponse()
+        return res.status, json.loads(res.read() or b"{}")
+    finally:
+        conn.close()
+
+
+RUN = {"X-MiniFlow-Action": "run"}
+
+
+def test_examples_endpoint_lists_bundled_pipelines(tmp_path):
+    with DashboardServer(tmp_path / "s.db", port=0) as server:
+        status, _, body = get(server, "/api/examples")
+    data = json.loads(body)
+    assert status == 200
+    assert data["allowRun"] is False
+    assert {e["name"] for e in data["examples"]} == {
+        "earthquakes",
+        "air_quality",
+        "news_digest",
+        "shop_report",
+    }
+
+
+def test_read_only_dashboard_refuses_runs(tmp_path):
+    with DashboardServer(tmp_path / "s.db", port=0) as server:
+        assert post(server, "/api/examples/earthquakes/run", RUN)[0] == 403
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},  # no custom header: a plain cross-site form post
+        {"X-MiniFlow-Action": "run", "Origin": "https://evil.example"},
+        {"X-MiniFlow-Action": "run", "Host": "attacker.example:8765"},
+    ],
+)
+def test_runs_only_from_the_dashboard_page(tmp_path, headers):
+    with DashboardServer(tmp_path / "s.db", port=0, allow_run=True, offline=True) as server:
+        assert post(server, "/api/examples/earthquakes/run", headers)[0] == 403
+
+
+def test_unknown_example_and_paths(tmp_path):
+    with DashboardServer(tmp_path / "s.db", port=0, allow_run=True, offline=True) as server:
+        assert post(server, "/api/examples/rm_rf/run", RUN)[0] == 404
+        assert post(server, "/api/runs", RUN)[0] == 404
+
+
+def test_run_button_starts_an_example(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINIFLOW_REPORTS", str(tmp_path / "reports"))
+    monkeypatch.setenv("MINIFLOW_OFFLINE", "0")  # restored afterwards; the runner sets it
+    db = tmp_path / "s.db"
+    with DashboardServer(db, port=0, allow_run=True, offline=True) as server:
+        status, body = post(server, "/api/examples/shop_report/run", RUN)
+        assert (status, body) == (202, {"started": "shop_report"})
+        busy, _ = post(server, "/api/examples/earthquakes/run", RUN)
+        assert busy == 409  # one example at a time
+        deadline = time.monotonic() + 60
+        while server.runner.current is not None:
+            assert time.monotonic() < deadline
+            time.sleep(0.1)
+        runs = json.loads(get(server, "/api/runs")[2])
+    assert runs[0]["flow"] == "shop_report"
+    assert runs[0]["status"] == "SUCCESS"

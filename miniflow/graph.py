@@ -16,9 +16,10 @@ from __future__ import annotations
 import types
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
-from miniflow.task import Task
+from miniflow.task import Task, first_paragraph
 
 __all__ = ["DAG", "CycleError", "DuplicateTaskError", "GraphError", "UnknownDependencyError"]
 
@@ -46,6 +47,26 @@ class CycleError(GraphError):
         self.cycle = cycle
 
 
+def describe_module(module: types.ModuleType) -> dict[str, Any]:
+    """Title and story of a flow file: its docstring's first line and first paragraph after it.
+
+    Optional module-level settings: ``WATCH`` (a string: what to look for while the flow
+    runs) and ``HIGHLIGHTS`` (task names whose results summarise the run best).
+    """
+    lines = (module.__doc__ or "").strip().splitlines()
+    about: dict[str, Any] = {
+        "title": lines[0].strip() if lines else module.__name__.rsplit(".", 1)[-1]
+    }
+    about["description"] = first_paragraph("\n".join(lines[1:]))
+    watch = getattr(module, "WATCH", "")
+    if isinstance(watch, str) and watch:
+        about["watch"] = " ".join(watch.split())
+    highlights = getattr(module, "HIGHLIGHTS", None)
+    if isinstance(highlights, (list, tuple)):
+        about["highlights"] = [str(h) for h in highlights]
+    return about
+
+
 @dataclass(frozen=True)
 class DAG:
     """A validated, immutable task graph. Build it with :meth:`from_tasks`."""
@@ -53,10 +74,13 @@ class DAG:
     tasks: Mapping[str, Task]
     upstream: Mapping[str, tuple[str, ...]]
     downstream: Mapping[str, tuple[str, ...]]
+    #: Human-readable description of the whole flow: ``title``, ``description`` and
+    #: ``watch`` (what to look for while it runs), ``highlights``. Shown by the dashboard.
+    about: Mapping[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ build
     @classmethod
-    def from_tasks(cls, tasks: Iterable[Task]) -> DAG:
+    def from_tasks(cls, tasks: Iterable[Task], about: Mapping[str, Any] | None = None) -> DAG:
         """Build and validate a DAG. Raises a :class:`GraphError` subclass on failure."""
         by_name: dict[str, Task] = {}
         for t in tasks:
@@ -77,6 +101,7 @@ class DAG:
             tasks=types.MappingProxyType(by_name),
             upstream=types.MappingProxyType({n: t.after for n, t in by_name.items()}),
             downstream=types.MappingProxyType({n: tuple(d) for n, d in downstream.items()}),
+            about=types.MappingProxyType(dict(about or {})),
         )
         if len(dag._kahn()) != len(by_name):
             cycle = dag.find_cycle()
@@ -87,7 +112,9 @@ class DAG:
     @classmethod
     def from_module(cls, module: types.ModuleType) -> DAG:
         """Collect every :class:`Task` defined at module level, in definition order."""
-        return cls.from_tasks(v for v in vars(module).values() if isinstance(v, Task))
+        return cls.from_tasks(
+            (v for v in vars(module).values() if isinstance(v, Task)), about=describe_module(module)
+        )
 
     # ------------------------------------------------------------- algorithms
     def __len__(self) -> int:

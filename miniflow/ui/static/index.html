@@ -27,17 +27,45 @@
   </header>
 
   <main id="app">
+    <details class="panel gallery" id="gallery" open>
+      <summary>
+        <h2>Try a real-world example</h2>
+        <span class="hint" id="gallery-hint">Each one works with live public data. Pick one and watch it run.</span>
+      </summary>
+      <div class="cards" id="example-cards"></div>
+    </details>
+
     <section id="empty" class="empty" hidden>
       <h1>No runs yet</h1>
-      <p>Start one and it will appear here live:</p>
-      <pre><code>miniflow run examples/pipeline.py --ui</code></pre>
-      <p class="muted" id="empty-db"></p>
+      <p>Start one of the examples above, or run your own flow from a terminal:</p>
+      <pre><code>miniflow run my_flow.py --ui</code></pre>
     </section>
 
     <section id="dashboard" hidden>
+      <section class="panel story" id="story" aria-labelledby="story-title" hidden>
+        <h1 id="story-title"></h1>
+        <p id="story-text"></p>
+        <p class="watch" id="story-watch" hidden><strong>What to watch for:</strong> <span></span></p>
+        <details class="howto">
+          <summary>How to read this page</summary>
+          <ul>
+            <li><strong>Graph:</strong> every box is one step of the job; an arrow means "this step needs the result of that one". Steps with no arrow between them can run at the same time.</li>
+            <li><strong>Colours</strong> show each step's state: grey waiting, yellow ready, blue running (it pulses), orange retrying after a failure, green done, red failed, light grey skipped because something before it failed.</li>
+            <li><strong>Shapes</strong> show the kind of worker: plain box = <em>io</em> (waits on the network or disk, runs on threads), stacked box = <em>cpu</em> (heavy calculation, runs on separate CPU cores), pill = <em>async</em> (many small waits juggled by one event loop). A dashed outline marks an <em>optional</em> step the job can finish without.</li>
+            <li><strong>Timeline:</strong> one row per worker, one bar per attempt. Bars stacked above each other ran at the same time. Dotted orange curves are the pause before a retry.</li>
+            <li>Click any step to see what it does, what it produced and every attempt it made.</li>
+          </ul>
+        </details>
+      </section>
+
       <section class="summary" aria-label="Run summary">
         <div class="progress" id="progress" role="img" aria-label="Task progress"></div>
         <div class="stats" id="stats"></div>
+      </section>
+
+      <section class="panel outcome" id="outcome" aria-labelledby="outcome-title">
+        <div class="panel-head"><h2 id="outcome-title">What this run found</h2></div>
+        <div id="outcome-body"></div>
       </section>
 
       <div class="grid">
