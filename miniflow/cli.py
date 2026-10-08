@@ -261,7 +261,9 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 # ------------------------------------------------------------------- commands
 def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
     server = DashboardServer(
-        args.db, port=args.port, flows=getattr(args, "flows", None),
+        args.db,
+        port=args.port,
+        flows=getattr(args, "flows", None),
         allow_run=not getattr(args, "read_only", False) and not getattr(args, "ui", False),
         offline=getattr(args, "offline", False),
     ).start()

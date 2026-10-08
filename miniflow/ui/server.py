@@ -228,9 +228,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _same_origin(self) -> bool:
         hosts = self.server.hosts
         origin = self.headers.get("Origin")
-        return (self.headers.get("Host", "").lower() in hosts
-                and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
-                and self.headers.get("X-MiniFlow-Action") == "run")
+        return (
+            self.headers.get("Host", "").lower() in hosts
+            and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
+            and self.headers.get("X-MiniFlow-Action") == "run"
+        )
 
     def _control_body(self) -> dict[str, Any]:
         """Refuse requests that didn't come from the dashboard page, then parse the body."""
