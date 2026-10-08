@@ -94,6 +94,7 @@ _PARAM_TYPES: dict[str, type] = {
     "str": str, "int": int, "float": float, "bool": bool, "list": list, "dict": dict,
 }  # fmt: skip
 _TRUE, _FALSE = {"true", "yes", "1", "on"}, {"false", "no", "0", "off"}
+_FROM_FILE = object()
 
 
 class FlowFileError(ValueError):
@@ -461,19 +462,23 @@ def load_json_flow(
     blocks: Iterable[str | os.PathLike[str]] = (),
     _stack: tuple[Path, ...] = (),
     _nested: bool = False,
+    _source: Any = _FROM_FILE,
 ) -> Flow:
     """Read, check and build the JSON flow at ``path``."""
     p = Path(path).resolve()
     if p in _stack:
         raise FlowFileError(p, ["this flow includes itself through a sub-flow"])
-    if not p.is_file():
+    if _source is _FROM_FILE and not p.is_file():
         raise FileNotFoundError(p)
-    try:
-        spec = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise FlowFileError(
-            p, [f"isn't valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}"]
-        ) from None
+    if _source is _FROM_FILE:
+        try:
+            spec = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise FlowFileError(
+                p, [f"isn't valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}"]
+            ) from None
+    else:
+        spec = _source
     c = _Checker(p)
     if not isinstance(spec, dict):
         raise FlowFileError(p, ["a flow file should be a JSON object with a 'steps' field"])

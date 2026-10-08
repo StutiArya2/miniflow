@@ -171,6 +171,12 @@ class RunController:
                 "error": self._error,
             }
 
+    def add_flow(self, name: str, path: Path) -> None:
+        """Make a newly saved JSON flow available to the Run button."""
+        with self._lock:
+            self.flows[name] = path.resolve()
+            self.flows = dict(sorted(self.flows.items()))
+
     def shutdown(self) -> None:
         """Cancel the active run, if there is one (when the dashboard stops)."""
         with contextlib.suppress(ControlError):

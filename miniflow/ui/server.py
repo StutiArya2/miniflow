@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
+from miniflow.ui.author import FlowWorkspace, WorkspaceError, block_catalog
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
 
@@ -58,6 +59,7 @@ _POLL_SECONDS = 0.25
 _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
 _MAX_BODY = 4096
+_MAX_FLOW_BODY = 262144
 _ACTIONS = ("run", "resume", "cancel")
 
 
@@ -165,6 +167,19 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
+            elif parts == ["api", "blocks"] and self.server.workspace is not None:
+                self._send_json(block_catalog())
+            elif parts == ["api", "flows"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.list())
+            elif (
+                len(parts) == 3
+                and parts[:2] == ["api", "flows"]
+                and self.server.workspace is not None
+            ):
+                try:
+                    self._send_json(self.server.workspace.read(parts[2]))
+                except (FileNotFoundError, WorkspaceError):
+                    self._send_error(HTTPStatus.NOT_FOUND, "flow not found")
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -188,6 +203,26 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if (
+                len(parts) == 3
+                and parts[:2] == ["api", "flows"]
+                and parts[2] in ("validate", "save")
+                and self.server.workspace is not None
+            ):
+                body = self._control_body(_MAX_FLOW_BODY)
+                name = _text(body, "name")
+                if "flow" not in body:
+                    raise ControlError("flow is required", HTTPStatus.BAD_REQUEST)
+                if parts[2] == "save":
+                    result = self.server.workspace.save(name, body["flow"])
+                    if result["valid"] and controller is not None:
+                        controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
+                else:
+                    result = self.server.workspace.validate(name, body["flow"])
+                self._send_json(
+                    result, HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST
+                )
+                return
             if len(parts) == 4 and parts[:2] == ["api", "examples"] and parts[3] == "run":
                 if not self.server.allow_run:
                     self._send_error(HTTPStatus.FORBIDDEN, "this dashboard is read-only")
@@ -222,6 +257,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(controller.status())
         except ControlError as exc:
             self._send_error(exc.status, str(exc))
+        except WorkspaceError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
@@ -234,7 +271,7 @@ class _Handler(BaseHTTPRequestHandler):
             and self.headers.get("X-MiniFlow-Action") == "run"
         )
 
-    def _control_body(self) -> dict[str, Any]:
+    def _control_body(self, limit: int = _MAX_BODY) -> dict[str, Any]:
         """Refuse requests that didn't come from the dashboard page, then parse the body."""
         hosts = self.server.hosts
         if self.headers.get("Host", "").lower() not in hosts:
@@ -249,9 +286,9 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             raise ControlError("Content-Length is required", HTTPStatus.LENGTH_REQUIRED) from None
-        if not 0 <= length <= _MAX_BODY:
+        if not 0 <= length <= limit:
             raise ControlError(
-                f"the body is over {_MAX_BODY} bytes", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                f"the body is over {limit} bytes", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
             )
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -366,6 +403,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.store = StateStore(db)
         self.api = _Api(self.store)
         try:
+            self.workspace = None if flows is None else FlowWorkspace(flows)
             self.controller = None if flows is None else RunController(flows, self.store)
         except OSError:
             self.store.close()
