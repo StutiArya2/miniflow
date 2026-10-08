@@ -57,7 +57,14 @@ from pathlib import Path
 from typing import Any
 
 from miniflow.blocks import BlockError, BlockSpec, Setting, get_block, load_plugins, type_name
-from miniflow.blocks.runtime import call_block, prepare, run_step, run_step_async
+from miniflow.blocks.runtime import (
+    bind_subflow,
+    call_block,
+    collect_subflow,
+    prepare,
+    run_step,
+    run_step_async,
+)
 from miniflow.blocks.template import TemplateError, references
 from miniflow.graph import DAG, CycleError, GraphError
 from miniflow.scheduler import RunResult
@@ -66,8 +73,18 @@ from miniflow.task import KINDS, Task, task
 
 __all__ = ["Flow", "FlowFileError", "load_json_flow"]
 
-_TOP = ("description", "params", "steps", "on_failure")
-_STEP_FIELDS = ("block", "settings", "after", "retries", "timeout", "kind", "note", "position")
+_TOP = ("description", "params", "steps", "outputs", "on_failure")
+_STEP_FIELDS = (
+    "block",
+    "flow",
+    "settings",
+    "after",
+    "retries",
+    "timeout",
+    "kind",
+    "note",
+    "position",
+)
 _PARAM_FIELDS = ("type", "default", "help")
 _RESERVED = ("params", "env", "failure")
 _FAILURE_FIELDS = ("step", "error", "failed", "skipped", "run_id")
@@ -100,6 +117,7 @@ class Flow:
     description: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     on_failure: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
 
     def run_on_failure(self, result: RunResult) -> Any:
         """Run the ``on_failure`` block for a failed run; ``None`` if there is none."""
@@ -321,15 +339,133 @@ def _is_literal(value: Any) -> bool:
         return False
 
 
+def _dummy_values(declared: Any) -> dict[str, Any]:
+    """Values used only to check a nested flow before its inputs are available."""
+    if not isinstance(declared, dict):
+        return {}
+    dummy: dict[str, Any] = {}
+    for name, definition in declared.items():
+        if isinstance(definition, dict) and "default" not in definition:
+            kind = _PARAM_TYPES.get(definition.get("type", "str"))
+            if kind is not None:
+                dummy[name] = kind()
+    return dummy
+
+
+def _subflow_settings(
+    checker: _Checker,
+    where: str,
+    raw: Any,
+    declared: Any,
+    steps: list[str],
+    values: Mapping[str, Any],
+    name: str,
+) -> list[str]:
+    if not isinstance(raw, dict):
+        checker.add(f"{where}: 'settings' should be an object")
+        return []
+    if not isinstance(declared, dict):
+        return []
+    used: list[str] = []
+    for key, value in raw.items():
+        if key not in declared:
+            checker.add(f"{where}: unknown setting {key!r}.{_suggest(key, declared)}")
+            continue
+        here = f"{where}, setting {key!r}"
+        used.extend(x for x in checker.refs(here, value, steps, values, me=name) if x not in used)
+        definition = declared[key]
+        if isinstance(definition, dict) and _is_literal(value):
+            kind = _PARAM_TYPES.get(definition.get("type", "str"))
+            if kind is not None:
+                problem = Setting(key, kind).check(value)
+                if problem:
+                    checker.add(f"{here}: {problem}")
+    for key, definition in declared.items():
+        if isinstance(definition, dict) and "default" not in definition and key not in raw:
+            checker.add(f"{where}: missing required setting {key!r}")
+    return used
+
+
+def _expand_subflow(
+    name: str,
+    raw: dict[str, Any],
+    child: Flow,
+    declared: Mapping[str, Any],
+    dependencies: list[str],
+    parent_values: Mapping[str, Any],
+) -> list[Task]:
+    """Inline a checked child DAG, preserving its visible step names in the run."""
+    binder = f"{name}.params"
+    tasks = [
+        task(
+            bind_subflow,
+            name=binder,
+            kind="io",
+            after=dependencies,
+            kwargs={
+                "settings": raw.get("settings", {}),
+                "inputs": dependencies,
+                "params": dict(parent_values),
+                "declaration": dict(declared),
+            },
+        )
+    ]
+    for child_task in child.dag.tasks.values():
+        after = [f"{name}.{dep}" for dep in child_task.after]
+        kwargs = dict(child_task.kwargs)
+        # Direct child steps and nested binders need this flow's live parameters.
+        # A nested step already receives parameters from its own binder.
+        if "inputs" in kwargs and "__params__" not in kwargs["inputs"]:
+            after.append(binder)
+            kwargs["inputs"] = [*kwargs["inputs"], "__params__"]
+        tasks.append(
+            task(
+                child_task.fn,
+                name=f"{name}.{child_task.name}",
+                kind=child_task.kind,
+                after=after,
+                retries=child_task.retries,
+                timeout=child_task.timeout,
+                args=child_task.args,
+                kwargs=kwargs,
+            )
+        )
+    outputs = child.outputs
+    if outputs is None:
+        outputs = {step: f"{{{{ {step} }}}}" for step in child.dag.tasks if "." not in step}
+    # The parent step represents the whole child flow, including steps not named
+    # in its public outputs. It must wait for all of them before succeeding.
+    roots = [step for step in child.dag.tasks if "." not in step]
+    final_after = [f"{name}.{root}" for root in roots]
+    inputs = list(roots)
+    if any(root == "params" for value in outputs.values() for root, _ in references(value)):
+        final_after.append(binder)
+        inputs.append("__params__")
+    tasks.append(
+        task(
+            collect_subflow,
+            name=name,
+            kind="io",
+            after=final_after,
+            kwargs={"outputs": outputs, "inputs": inputs, "params": dict(child.params)},
+        )
+    )
+    return tasks
+
+
 def load_json_flow(
     path: str | os.PathLike[str],
     *,
     params: Mapping[str, str] | None = None,
     environment: str | None = None,
     blocks: Iterable[str | os.PathLike[str]] = (),
+    _stack: tuple[Path, ...] = (),
+    _nested: bool = False,
 ) -> Flow:
     """Read, check and build the JSON flow at ``path``."""
     p = Path(path).resolve()
+    if p in _stack:
+        raise FlowFileError(p, ["this flow includes itself through a sub-flow"])
     if not p.is_file():
         raise FileNotFoundError(p)
     try:
@@ -376,7 +512,10 @@ def load_json_flow(
             if (env_dir / f"{environment}.env").is_file():
                 _read_env_file(env_dir / f"{environment}.env")
 
-    values = c.params(spec.get("params", {}), params or {}, from_env)
+    declared_params = spec.get("params", {})
+    if _nested:
+        from_env = _dummy_values(declared_params)
+    values = c.params(declared_params, params or {}, from_env)
 
     steps = spec.get("steps")
     if not isinstance(steps, dict) or not steps:
@@ -387,6 +526,7 @@ def load_json_flow(
     tasks: list[Task] = []
     for name, raw in steps.items():
         where = f"step {name!r}"
+        before = len(c.problems)
         if name in _RESERVED:
             c.add(f"{name!r} can't be used as a step name (it's reserved for {{{{ {name}.… }}}})")
             continue
@@ -402,10 +542,35 @@ def load_json_flow(
         for key in raw:
             if key not in _STEP_FIELDS:
                 c.add(f"{where}: unknown field {key!r}.{_suggest(key, _STEP_FIELDS)}")
-        block = c.block(where, raw)
-        if block is None:
-            continue
-        deps = c.settings(where, block, raw.get("settings", {}), names, values, me=name)
+        child: Flow | None = None
+        block: BlockSpec | None = None
+        if "flow" in raw:
+            if "block" in raw:
+                c.add(f"{where}: use either 'block' or 'flow', not both")
+            child_path = p.parent / str(raw["flow"])
+            if not child_path.is_file():
+                c.add(f"{where}: there is no flow file at {raw['flow']!r}")
+            else:
+                try:
+                    child = load_json_flow(
+                        child_path, blocks=blocks, _stack=(*_stack, p), _nested=True
+                    )
+                except FlowFileError as exc:
+                    for problem in exc.problems:
+                        c.add(f"{where} ({raw['flow']}): {problem}")
+            child_declared: Any = None
+            if child is not None:
+                child_declared = json.loads(child.path.read_text(encoding="utf-8")).get(
+                    "params", {}
+                )
+            deps = _subflow_settings(
+                c, where, raw.get("settings", {}), child_declared, names, values, name
+            )
+        else:
+            block = c.block(where, raw)
+            if block is None:
+                continue
+            deps = c.settings(where, block, raw.get("settings", {}), names, values, me=name)
         after = raw.get("after", [])
         if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
             c.add(f"{where}: 'after' should be a list of step names")
@@ -425,15 +590,19 @@ def load_json_flow(
         ):
             c.add(f"{where}: timeout should be a number of seconds above 0")
             timeout = None
-        kind = raw.get("kind", block.kind)
+        kind = raw.get("kind", block.kind if block else "io")
         if kind not in KINDS:
             c.add(f"{where}: kind should be one of {', '.join(KINDS)}, not {kind!r}")
-            kind = block.kind
-        elif (kind == "async") != (block.kind == "async"):
+            kind = block.kind if block else "io"
+        elif block is not None and (kind == "async") != (block.kind == "async"):
             c.add(f"{where}: block {block.name!r} can't run with kind {kind!r}")
             kind = block.kind
-        if c.problems:
+        if len(c.problems) > before:
             continue  # keep checking, but don't build tasks for a broken flow
+        if child is not None:
+            tasks.extend(_expand_subflow(name, raw, child, child_declared, deps, values))
+            continue
+        assert block is not None
         tasks.append(
             task(
                 run_step_async if kind == "async" else run_step,
@@ -454,6 +623,13 @@ def load_json_flow(
         )
 
     on_failure = spec.get("on_failure")
+    outputs = spec.get("outputs")
+    if outputs is not None:
+        if not isinstance(outputs, dict):
+            c.add("'outputs' should be an object of named results")
+        else:
+            for output_name, value in outputs.items():
+                c.refs(f"output {output_name!r}", value, names, values)
     if on_failure is not None:
         where = "on_failure"
         if not isinstance(on_failure, dict):
@@ -481,4 +657,5 @@ def load_json_flow(
         description=str(spec.get("description", "")),
         params=values,
         on_failure=on_failure,
+        outputs=outputs,
     )

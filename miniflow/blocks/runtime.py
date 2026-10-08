@@ -22,12 +22,28 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from miniflow.blocks import BlockError, BlockSpec, get_block
+from miniflow.blocks import BlockError, BlockSpec, Setting, get_block
 from miniflow.blocks.template import TemplateError, render
 
-__all__ = ["StepError", "call_block", "prepare", "run_step", "run_step_async"]
+__all__ = [
+    "StepError",
+    "bind_subflow",
+    "call_block",
+    "collect_subflow",
+    "prepare",
+    "run_step",
+    "run_step_async",
+]
 
 MASK = "••••"
+_PARAM_TYPES: dict[str, type] = {
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+}
 
 
 class StepError(RuntimeError):
@@ -80,7 +96,45 @@ def _mask(text: str, secrets: Sequence[str]) -> str:
 def _context(
     upstream: Sequence[Any], inputs: Sequence[str], params: Mapping[str, Any]
 ) -> dict[str, Any]:
-    return {**dict(zip(inputs, upstream, strict=True)), "params": params, "env": os.environ}
+    values = dict(zip(inputs, upstream, strict=True))
+    actual_params = values.pop("__params__", params)
+    return {**values, "params": actual_params, "env": os.environ}
+
+
+def bind_subflow(
+    *upstream: Any,
+    settings: Mapping[str, Any],
+    inputs: Sequence[str],
+    params: Mapping[str, Any],
+    declaration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve a sub-flow's parameter settings from its parent's results."""
+    context = _context(upstream, inputs, params)
+    bound: dict[str, Any] = {}
+    for name, definition in declaration.items():
+        if name in settings:
+            bound[name] = render(settings[name], context)
+        elif "default" in definition:
+            bound[name] = definition["default"]
+        else:
+            raise StepError(f"missing required setting {name!r}")
+        kind = _PARAM_TYPES.get(definition.get("type", "str"))
+        if kind is not None:
+            problem = Setting(name, kind).check(bound[name])
+            if problem:
+                raise StepError(f"setting {name!r}: {problem}")
+    return bound
+
+
+def collect_subflow(
+    *upstream: Any,
+    outputs: Mapping[str, Any],
+    inputs: Sequence[str],
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Expose only declared outputs, or every step when none were declared."""
+    context = _context(upstream, inputs, params)
+    return {key: render(value, context) for key, value in outputs.items()}
 
 
 def call_block(spec: BlockSpec, values: Mapping[str, Any], secrets: Sequence[str]) -> Any:
