@@ -47,6 +47,7 @@ from miniflow.store import RunRecord, StateStore
 from miniflow.ui.author import FlowWorkspace, WorkspaceError
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
+from miniflow.ui.schedules import ScheduleService
 
 __all__ = ["DashboardServer"]
 
@@ -196,6 +197,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._stream(parts[2], since)
             elif parts == ["api", "control"] and self.server.controller is not None:
                 self._send_json(self.server.controller.status())
+            elif parts == ["api", "schedules"]:
+                if self.server.schedule_service is None:
+                    self._send_json({"schedules": [], "problems": {}, "events": []})
+                else:
+                    self._send_json(self.server.schedule_service.snapshot())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -401,6 +407,7 @@ class DashboardServer(ThreadingHTTPServer):
         *,
         allow_run: bool = False,
         offline: bool = False,
+        schedules: bool = False,
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
@@ -416,6 +423,11 @@ class DashboardServer(ThreadingHTTPServer):
         try:
             self.workspace = None if flows is None else FlowWorkspace(flows)
             self.controller = None if flows is None else RunController(flows, self.store)
+            self.schedule_service = (
+                ScheduleService(self.controller, self.store)
+                if schedules and self.controller is not None
+                else None
+            )
         except OSError:
             self.store.close()
             raise
@@ -459,9 +471,13 @@ class DashboardServer(ThreadingHTTPServer):
             name="miniflow-ui",
         )
         self._thread.start()
+        if self.schedule_service is not None:
+            self.schedule_service.start()
         return self
 
     def stop(self) -> None:
+        if self.schedule_service is not None:
+            self.schedule_service.stop()
         if self.controller is not None:
             self.controller.shutdown()
         self.stopping.set()

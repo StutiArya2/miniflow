@@ -109,6 +109,13 @@ A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declar
 become settings, and its `outputs` become the result of that step. Inner steps remain visible
 in the run graph.
 
+For unattended local runs, add a schedule in the editor's **Schedules** panel and start
+`miniflow serve --flows examples --db miniflow.db`. A flow can have named interval schedules
+(`{"name": "frequent", "interval_seconds": 60}`) or daily local-time schedules
+(`{"name": "morning", "daily": "09:00"`). The dashboard shows each next run and records
+launched, missed and failed launches. Scheduled runs appear in the same history and inspection
+views as manual runs. Keep the `serve` process running on the laptop for schedules to fire.
+
 ## Dashboard
 
 ```bash

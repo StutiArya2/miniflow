@@ -44,6 +44,10 @@
         <summary>Flow tests <span class="hint">Sample inputs and expected results</span></summary>
         <div id="studio-test-editor"></div>
       </details>
+      <details id="studio-schedule-panel" class="panel studio-test-panel">
+        <summary>Schedules <span class="hint">Run this flow locally at an interval or time of day</span></summary>
+        <div id="studio-schedule-editor"></div>
+      </details>
       <div class="studio-layout">
         <aside class="studio-palette panel">
           <h2>Blocks</h2>
@@ -65,6 +69,11 @@
           <div id="studio-settings"><p class="muted">Select a node on the canvas.</p></div>
         </aside>
       </div>
+    </section>
+    <section class="panel" id="schedules-panel" aria-labelledby="schedules-title" hidden>
+      <div class="panel-head"><h2 id="schedules-title">Schedules</h2><p class="hint">Local laptop time</p></div>
+      <div id="schedules-body"></div>
+      <div id="schedule-events"></div>
     </section>
     <details class="panel gallery" id="gallery" open>
       <summary><h2>Try a real-world example</h2><span class="hint" id="gallery-hint">Pick one and watch it run.</span></summary>

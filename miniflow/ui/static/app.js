@@ -758,6 +758,30 @@ function renderProblems() {
       h("span", {}, firstLine(task.error) || (task.state === "SKIPPED" ? "Skipped after an earlier failure" : "Step failed")))));
 }
 
+async function loadSchedules() {
+  try {
+    const response = await fetch("/api/schedules", { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    const panel = $("schedules-panel");
+    panel.hidden = !data.schedules.length && !data.events.length && !Object.keys(data.problems).length;
+    if (panel.hidden) return;
+    $("schedules-body").replaceChildren(...data.schedules.map((item) =>
+      h("div", { class: "schedule-row" },
+        h("strong", {}, `${item.flow} · ${item.name}`),
+        h("span", {}, item.daily ? `Daily ${item.daily}` : `Every ${item.interval_seconds}s`),
+        h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`))));
+    const events = data.events.slice(0, 8).map((event) =>
+      h("div", { class: "schedule-row" },
+        pill(event.status),
+        h("span", {}, `${event.flow} · ${event.schedule} · ${new Date(event.due_at * 1000).toLocaleString()}`),
+        event.message ? h("span", { class: "muted" }, event.message) : null));
+    const problems = Object.entries(data.problems).map(([flow, message]) =>
+      h("p", { class: "error" }, `${flow}: ${message}`));
+    $("schedule-events").replaceChildren(...events, ...problems);
+  } catch { /* dashboard is still usable if a schedule read fails */ }
+}
+
 // ---------------------------------------------------------------- examples
 const EX = { list: [], allowRun: false, offline: false, running: null, pending: null };
 
@@ -884,6 +908,8 @@ function init() {
   });
   loadExamples();
   setInterval(loadExamples, 3000);
+  loadSchedules();
+  setInterval(loadSchedules, 3000);
   const m = /run=([\w-]+)/.exec(location.hash);
   if (m) {
     setFollow(false);

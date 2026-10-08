@@ -193,6 +193,51 @@ function studioRender() {
   studioWires(positions);
   studioInspector();
   studioRenderTests();
+  studioRenderSchedules();
+}
+
+function studioRenderSchedules() {
+  const host = document.getElementById("studio-schedule-editor");
+  const schedules = Studio.flow.schedules ||= [];
+  const rows = schedules.map((schedule, index) => {
+    const row = document.createElement("div"); row.className = "studio-test-row";
+    const name = document.createElement("input"); name.value = schedule.name;
+    name.setAttribute("aria-label", `Schedule ${index + 1} name`);
+    name.onchange = () => { schedule.name = name.value.trim(); Studio.dirty = true; };
+    const type = document.createElement("select"); type.setAttribute("aria-label", `Schedule ${index + 1} type`);
+    type.append(new Option("Every N seconds", "interval_seconds"), new Option("Daily at local time", "daily"));
+    type.value = schedule.daily !== undefined ? "daily" : "interval_seconds";
+    type.onchange = () => {
+      delete schedule.daily; delete schedule.interval_seconds;
+      if (type.value === "daily") schedule.daily = "09:00";
+      else schedule.interval_seconds = 60;
+      Studio.dirty = true; studioRenderSchedules();
+    };
+    const value = document.createElement("input");
+    value.setAttribute("aria-label", `Schedule ${index + 1} value`);
+    value.type = type.value === "daily" ? "time" : "number";
+    if (value.type === "number") { value.min = "1"; value.step = "1"; }
+    value.value = String(type.value === "daily" ? schedule.daily : schedule.interval_seconds);
+    value.onchange = () => {
+      if (type.value === "daily") schedule.daily = value.value;
+      else schedule.interval_seconds = Number(value.value);
+      Studio.dirty = true;
+    };
+    const remove = document.createElement("button"); remove.className = "btn danger";
+    remove.type = "button"; remove.textContent = "Remove";
+    remove.onclick = () => { schedules.splice(index, 1); Studio.dirty = true; studioRenderSchedules(); };
+    row.append(name, type, value, remove);
+    return row;
+  });
+  const add = document.createElement("button"); add.className = "btn";
+  add.type = "button"; add.textContent = "Add schedule";
+  add.onclick = () => {
+    let number = schedules.length + 1;
+    while (schedules.some((item) => item.name === `schedule_${number}`)) number++;
+    schedules.push({ name: `schedule_${number}`, interval_seconds: 60 });
+    Studio.dirty = true; studioRenderSchedules();
+  };
+  host.replaceChildren(...rows, add);
 }
 
 function studioTestValue(text) {

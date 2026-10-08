@@ -268,6 +268,7 @@ def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
         flows=getattr(args, "flows", None),
         allow_run=not getattr(args, "read_only", False) and not getattr(args, "ui", False),
         offline=getattr(args, "offline", False),
+        schedules=getattr(args, "schedules", False),
     ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
@@ -655,6 +656,13 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--offline", action="store_true", help="examples use saved data")
     dashboard_options(u)
     u.set_defaults(func=_cmd_ui)
+
+    sv = sub.add_parser("serve", help="run the dashboard and local JSON-flow schedules")
+    sv.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
+    sv.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    sv.add_argument("--offline", action="store_true", help="examples use saved data")
+    dashboard_options(sv)
+    sv.set_defaults(func=_cmd_ui, schedules=True, read_only=False)
 
     v = sub.add_parser("validate", help="check the DAG and print a topological order")
     v.add_argument("flow")

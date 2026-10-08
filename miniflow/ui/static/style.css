@@ -212,6 +212,7 @@ main { padding: 16px 20px 32px; display: flex; flex-direction: column; gap: 16px
 .sample-table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .sample-table th, .sample-table td { padding: 5px 8px; border: 1px solid var(--border); text-align: left; vertical-align: top; max-width: 180px; overflow-wrap: anywhere; }
 .problem-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.schedule-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
 
 /* ----------------------------------------------------------------- runs */
 table.runs { width: 100%; border-collapse: collapse; font-size: 13px; }

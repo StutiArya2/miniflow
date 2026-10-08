@@ -67,13 +67,14 @@ from miniflow.blocks.runtime import (
 )
 from miniflow.blocks.template import TemplateError, references
 from miniflow.graph import DAG, CycleError, GraphError
+from miniflow.schedule import Schedule, parse_schedules
 from miniflow.scheduler import RunResult
 from miniflow.states import State
 from miniflow.task import KINDS, Task, task
 
 __all__ = ["Flow", "FlowFileError", "load_json_flow"]
 
-_TOP = ("description", "params", "steps", "outputs", "on_failure", "tests")
+_TOP = ("description", "params", "steps", "outputs", "on_failure", "tests", "schedules")
 _STEP_FIELDS = (
     "block",
     "flow",
@@ -120,6 +121,7 @@ class Flow:
     on_failure: dict[str, Any] | None = None
     outputs: dict[str, Any] | None = None
     tests: tuple[dict[str, Any], ...] = ()
+    schedules: tuple[Schedule, ...] = ()
 
     def run_on_failure(self, result: RunResult) -> Any:
         """Run the ``on_failure`` block for a failed run; ``None`` if there is none."""
@@ -494,6 +496,8 @@ def load_json_flow(
     for key in spec:
         if key not in _TOP:
             c.add(f"unknown top-level field {key!r}.{_suggest(key, _TOP)}")
+    schedules, schedule_problems = parse_schedules(spec.get("schedules"))
+    c.problems.extend(schedule_problems)
 
     from_env: dict[str, Any] = {}
     if environment is not None:
@@ -697,4 +701,5 @@ def load_json_flow(
         on_failure=on_failure,
         outputs=outputs,
         tests=tuple(case for case in flow_tests if isinstance(case, dict)),
+        schedules=schedules,
     )

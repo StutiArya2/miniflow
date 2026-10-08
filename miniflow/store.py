@@ -60,9 +60,9 @@ from miniflow.states import TERMINAL, State
 if TYPE_CHECKING:
     from miniflow.graph import DAG
 
-__all__ = ["AttemptRecord", "RunRecord", "StateStore", "TaskRecord"]
+__all__ = ["AttemptRecord", "RunRecord", "ScheduleEvent", "StateStore", "TaskRecord"]
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -100,6 +100,15 @@ CREATE TABLE IF NOT EXISTS attempts (
     started_at  REAL,
     finished_at REAL,
     PRIMARY KEY (run_id, task, attempt)
+);
+CREATE TABLE IF NOT EXISTS schedule_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow        TEXT NOT NULL,
+    schedule    TEXT NOT NULL,
+    due_at      REAL NOT NULL,
+    recorded_at REAL NOT NULL,
+    status      TEXT NOT NULL,
+    message     TEXT
 );
 """
 
@@ -146,6 +155,19 @@ class AttemptRecord:
     worker: str | None
     started_at: float | None
     finished_at: float | None
+
+
+@dataclass(frozen=True)
+class ScheduleEvent:
+    """One scheduled launch or a missed/failed launch."""
+
+    id: int
+    flow: str
+    schedule: str
+    due_at: float
+    recorded_at: float
+    status: str
+    message: str | None
 
 
 class StateStore:
@@ -336,6 +358,24 @@ class StateStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no run {run_id!r}")
+
+    def record_schedule_event(
+        self, flow: str, schedule: str, due_at: float, status: str, message: str | None = None
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO schedule_events (flow, schedule, due_at, recorded_at, status, message)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (flow, schedule, due_at, self._now(), status, message),
+            )
+
+    def list_schedule_events(self, limit: int = 50) -> list[ScheduleEvent]:
+        rows = self._query(
+            "SELECT id, flow, schedule, due_at, recorded_at, status, message"
+            " FROM schedule_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [ScheduleEvent(*row) for row in rows]
 
     # ------------------------------------------------------------------- reads
     def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
