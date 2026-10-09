@@ -57,6 +57,7 @@ log = logging.getLogger("miniflow.ui")
 _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "charts.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
     "editor-history.js": "text/javascript; charset=utf-8",
     "editor-view.js": "text/javascript; charset=utf-8",
@@ -68,6 +69,7 @@ _POLL_SECONDS = 0.25
 _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
 _MAX_BODY = 4096
+_MAX_DISCARD = 1024 * 1024  # unread request bytes drained before closing
 _MAX_FLOW_BODY = 262144
 _MAX_UPLOAD_BODY = 10 * 1024 * 1024
 _ACTIONS = ("run", "resume", "partial", "cancel")
@@ -233,7 +235,42 @@ class _Handler(BaseHTTPRequestHandler):
             pass  # the browser went away
 
     def do_POST(self) -> None:
-        self.close_connection = True  # a refused request's body is never read
+        self.close_connection = True
+        self._consumed = 0
+        try:
+            self._post()
+        finally:
+            self._discard_body()
+
+    def _read_body(self, length: int) -> bytes:
+        data = self.rfile.read(length)
+        self._consumed += len(data)
+        return data
+
+    def _discard_body(self) -> None:
+        """Read what is left of a refused request's body before the socket closes.
+
+        Closing a socket with unread data makes Windows reset the connection, and the
+        client can then lose the error reply already sent. Small bodies are drained;
+        anything bigger is left to the reset.
+        """
+        try:
+            remaining = int(self.headers.get("Content-Length", "0")) - self._consumed
+        except ValueError:
+            return
+        if not 0 < remaining <= _MAX_DISCARD:
+            return
+        try:
+            self.connection.settimeout(1.0)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            pass  # the client went away
+
+    def _post(self) -> None:
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
@@ -378,7 +415,7 @@ class _Handler(BaseHTTPRequestHandler):
                 f"the body is over {limit} bytes", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
             )
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(self._read_body(length) or b"{}")
         except ValueError:
             raise ControlError("the body is not valid JSON", HTTPStatus.BAD_REQUEST) from None
         if not isinstance(body, dict):
@@ -410,7 +447,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "CSV file must be between 1 byte and 10 MB", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
             )
         filename = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
-        relative = workspace.upload_csv(filename, self.rfile.read(length))
+        relative = workspace.upload_csv(filename, self._read_body(length))
         self._send_json({"path": relative}, HTTPStatus.CREATED)
 
     # --------------------------------------------------------------- replies
