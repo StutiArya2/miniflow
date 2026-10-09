@@ -220,7 +220,8 @@ async function control(action, body) {
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      started = action !== "cancel";
+      const result = await res.json();
+      started = action !== "cancel" && !result.queued;
       if (started) setFollow(true);
     } else {
       const data = await res.json().catch(() => ({}));
@@ -252,16 +253,19 @@ function renderControl() {
     select.replaceChildren(...c.flows.map((f) => h("option", { value: f }, f)));
     if (c.flows.includes(current)) select.value = current;
   }
-  const busy = S.controlBusy || !!c.active;
+  const busy = S.controlBusy;
   select.disabled = busy;
   $("ctl-run").disabled = busy || c.flows.length === 0;
-  $("ctl-active").hidden = !c.active;
-  if (c.active) {
+  $("ctl-active").hidden = !c.active && !c.queued?.length;
+  if (c.active || c.queued?.length) {
+    const running = c.running || (c.active ? [c.active] : []);
     $("ctl-active").replaceChildren(
-      c.active.action === "resume" ? "Resuming " : "Running ", h("strong", {}, c.active.flow), "…");
+      running.length ? `Running ${running.map((item) => item.flow).join(", ")}` : "",
+      c.queued?.length ? ` · ${c.queued.length} waiting` : "");
   }
   $("ctl-cancel").hidden = !c.active;
   $("ctl-cancel").disabled = S.controlBusy;
+  if (c.active) $("ctl-cancel").title = "Cancel the selected active run, or the oldest active run";
   const error = S.controlError || c.error;
   $("ctl-error").hidden = !error;
   $("ctl-error").textContent = error || "";
@@ -765,13 +769,21 @@ async function loadSchedules() {
     if (!response.ok) return;
     const data = await response.json();
     const panel = $("schedules-panel");
-    panel.hidden = !data.schedules.length && !data.events.length && !Object.keys(data.problems).length;
+    panel.hidden = !data.schedules.length && !data.events.length && !data.queued?.length && !Object.keys(data.problems).length;
     if (panel.hidden) return;
+    const scheduleLabel = (item) => item.cron ? `Cron ${item.cron}`
+      : item.daily ? `Daily ${item.daily}`
+      : item.interval_seconds != null ? `Every ${item.interval_seconds}s`
+      : item.watch ? `Watch ${item.watch} · check every ${item.poll_seconds}s`
+      : item.configured ? `Webhook ${item.url}` : `Webhook ${item.url} · set ${item.webhook}`;
     $("schedules-body").replaceChildren(...data.schedules.map((item) =>
       h("div", { class: "schedule-row" },
         h("strong", {}, `${item.flow} · ${item.name}`),
-        h("span", {}, item.daily ? `Daily ${item.daily}` : `Every ${item.interval_seconds}s`),
-        h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`))));
+        h("span", {}, scheduleLabel(item)),
+        item.next_run != null ? h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`) : null)));
+    const queued = (data.queued || []).map((item, index) =>
+      h("div", { class: "schedule-row" }, pill("QUEUED"),
+        h("span", {}, `${index + 1}. ${item.flow} · ${item.source}`)));
     const events = data.events.slice(0, 8).map((event) =>
       h("div", { class: "schedule-row" },
         pill(event.status),
@@ -779,7 +791,7 @@ async function loadSchedules() {
         event.message ? h("span", { class: "muted" }, event.message) : null));
     const problems = Object.entries(data.problems).map(([flow, message]) =>
       h("p", { class: "error" }, `${flow}: ${message}`));
-    $("schedule-events").replaceChildren(...events, ...problems);
+    $("schedule-events").replaceChildren(...queued, ...events, ...problems);
   } catch { /* dashboard is still usable if a schedule read fails */ }
 }
 
@@ -897,7 +909,10 @@ function init() {
   });
   $("ctl-run").addEventListener("click", () => control("run", { flow: $("ctl-flow").value, fail_rate: failRate() }));
   $("ctl-resume").addEventListener("click", () => control("resume", { run_id: S.runId, fail_rate: failRate() }));
-  $("ctl-cancel").addEventListener("click", () => control("cancel", {}));
+  $("ctl-cancel").addEventListener("click", () => {
+    const selected = (S.control?.running || []).find((item) => item.run_id === S.runId);
+    control("cancel", selected ? { run_id: selected.run_id } : {});
+  });
   // Check the controls every second while a run is active, otherwise every 3 s.
   let ticks = 0;
   loadControl().then(() => {

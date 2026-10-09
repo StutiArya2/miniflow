@@ -97,7 +97,7 @@ def test_due_schedule_launches_a_normal_run(tmp_path):
         assert store.list_schedule_events()[0].status == "LAUNCHED"
 
 
-def test_busy_controller_records_missed_schedule(tmp_path):
+def test_busy_controller_queues_schedule(tmp_path):
     flows = tmp_path / "flows"
     flows.mkdir()
     (flows / "daily_job.json").write_text(
@@ -122,7 +122,7 @@ def test_busy_controller_records_missed_schedule(tmp_path):
         try:
             service.tick(base + 1.1)
             event = store.list_schedule_events()[0]
-            assert event.status == "MISSED"
+            assert event.status == "QUEUED"
             assert "busy" in (event.message or "")
         finally:
             controller.cancel()

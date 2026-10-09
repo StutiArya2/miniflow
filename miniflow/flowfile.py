@@ -74,7 +74,9 @@ from miniflow.task import KINDS, Task, task
 
 __all__ = ["Flow", "FlowFileError", "load_json_flow"]
 
-_TOP = ("description", "params", "steps", "outputs", "on_failure", "tests", "schedules")
+_TOP = (
+    "description", "params", "steps", "outputs", "on_failure", "on_success", "tests", "schedules",
+)  # fmt: skip
 _STEP_FIELDS = (
     "block",
     "flow",
@@ -119,6 +121,7 @@ class Flow:
     description: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     on_failure: dict[str, Any] | None = None
+    on_success: dict[str, Any] | None = None
     outputs: dict[str, Any] | None = None
     tests: tuple[dict[str, Any], ...] = ()
     schedules: tuple[Schedule, ...] = ()
@@ -142,6 +145,19 @@ class Flow:
         context = {"params": self.params, "env": os.environ, "failure": failure}
         values, secrets = prepare(
             spec, self.on_failure.get("settings", {}), context, str(self.path.parent)
+        )
+        if inspect.iscoroutinefunction(spec.fn):
+            return asyncio.run(spec.fn(**values))
+        return call_block(spec, values, secrets)
+
+    def run_on_success(self, result: RunResult) -> Any:
+        """Run the success action with all completed step results available as placeholders."""
+        if self.on_success is None:
+            return None
+        spec = get_block(self.on_success["block"])
+        context = {**result.results, "params": self.params, "env": os.environ}
+        values, secrets = prepare(
+            spec, self.on_success.get("settings", {}), context, str(self.path.parent)
         )
         if inspect.iscoroutinefunction(spec.fn):
             return asyncio.run(spec.fn(**values))
@@ -636,6 +652,7 @@ def load_json_flow(
         )
 
     on_failure = spec.get("on_failure")
+    on_success = spec.get("on_success")
     outputs = spec.get("outputs")
     flow_tests = spec.get("tests", [])
     if not isinstance(flow_tests, list):
@@ -685,6 +702,14 @@ def load_json_flow(
                 c.settings(
                     where, block, on_failure.get("settings", {}), names, values, in_failure=True
                 )
+    if on_success is not None:
+        where = "on_success"
+        if not isinstance(on_success, dict):
+            c.add("on_success should be an object with a 'block' and its 'settings'")
+        else:
+            block = c.block(where, on_success)
+            if block is not None:
+                c.settings(where, block, on_success.get("settings", {}), names, values)
 
     if not c.problems:
         try:
@@ -702,6 +727,7 @@ def load_json_flow(
         description=str(spec.get("description", "")),
         params=values,
         on_failure=on_failure,
+        on_success=on_success,
         outputs=outputs,
         tests=tuple(case for case in flow_tests if isinstance(case, dict)),
         schedules=schedules,

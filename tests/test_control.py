@@ -119,7 +119,13 @@ def task_running(store: StateStore, flow: str, name: str) -> bool:
 
 # ------------------------------------------------------------------ flows
 def test_lists_only_public_python_files(controller):
-    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None}
+    assert controller.status() == {
+        "flows": FLOW_NAMES,
+        "active": None,
+        "running": [],
+        "error": None,
+        "queued": [],
+    }
 
 
 def test_missing_flows_folder_is_rejected(tmp_path, store):
@@ -154,13 +160,14 @@ def test_fault_rate_must_be_a_number_from_0_to_1(controller, rate):
     assert idle(controller)
 
 
-def test_only_one_run_at_a_time(controller, store):
+def test_manual_run_waits_for_the_active_run(controller, store):
     controller.start("sleepy", 0.4)
-    with pytest.raises(ControlError) as err:
-        controller.start("quick", 0.0)
-    assert err.value.status == HTTPStatus.CONFLICT
+    assert controller.start("quick", 0.0)["queued"] is True
+    assert [item["flow"] for item in controller.status()["queued"]] == ["quick"]
     wait_until(lambda: task_running(store, "sleepy", "slow"))
     controller.cancel()
+    wait_until(lambda: idle(controller))
+    assert status_of(store, run_of(store, "quick")) == "SUCCESS"
 
 
 def test_partial_json_run_uses_same_history(controller, store, flows_dir):
@@ -232,7 +239,13 @@ def test_cancel_interrupts_and_resume_reuses_finished_tasks(flows_dir, store):
     assert time.monotonic() - started < 10
     first = run_of(store, "sleepy")
     assert status_of(store, first) == "INTERRUPTED"
-    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None}
+    assert controller.status() == {
+        "flows": FLOW_NAMES,
+        "active": None,
+        "running": [],
+        "error": None,
+        "queued": [],
+    }
 
     active = controller.resume(first, 0.0)
     assert active["action"] == "resume"

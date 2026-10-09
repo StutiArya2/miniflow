@@ -237,6 +237,9 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if len(parts) == 4 and parts[:2] == ["api", "hooks"]:
+                self._hook(parts[2], parts[3])
+                return
             if parts == ["api", "flows", "upload-csv"] and self.server.workspace is not None:
                 self._upload_csv()
                 return
@@ -335,7 +338,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_json(active, HTTPStatus.ACCEPTED)
             else:
-                controller.cancel()
+                controller.cancel(body.get("run_id"))
                 self._send_json(controller.status())
         except ControlError as exc:
             self._send_error(exc.status, str(exc))
@@ -411,6 +414,19 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json({"path": relative}, HTTPStatus.CREATED)
 
     # --------------------------------------------------------------- replies
+    def _hook(self, flow: str, name: str) -> None:
+        """A webhook call: same-origin checks, then the schedule's secret token."""
+        service = self.server.schedule_service
+        if service is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        body = self._control_body()
+        header = self.headers.get("Authorization", "")
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        token = token or self.headers.get("X-MiniFlow-Token", "").strip()
+        state = service.fire_webhook(flow, name, token, body)
+        self._send_json({"status": state}, HTTPStatus.ACCEPTED)
+
     def _versions(self, name: str, vid: str | None, diff: bool) -> None:
         workspace = self.server.workspace
         assert workspace is not None
@@ -516,6 +532,9 @@ class DashboardServer(ThreadingHTTPServer):
         allow_run: bool = False,
         offline: bool = False,
         schedules: bool = False,
+        keep_runs: int | None = 100,
+        keep_days: float | None = None,
+        max_concurrent: int = 1,
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
@@ -530,7 +549,17 @@ class DashboardServer(ThreadingHTTPServer):
         self.api = _Api(self.store)
         try:
             self.workspace = None if flows is None else FlowWorkspace(flows)
-            self.controller = None if flows is None else RunController(flows, self.store)
+            self.controller = (
+                None
+                if flows is None
+                else RunController(
+                    flows,
+                    self.store,
+                    keep_runs=None if keep_days is not None else keep_runs,
+                    keep_days=keep_days,
+                    max_concurrent=max_concurrent,
+                )
+            )
             self.schedule_service = (
                 ScheduleService(self.controller, self.store)
                 if schedules and self.controller is not None

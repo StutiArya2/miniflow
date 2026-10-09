@@ -408,33 +408,61 @@ function studioRenderSchedules() {
   const host = document.getElementById("studio-schedule-editor");
   const schedules = Studio.flow.schedules ||= [];
   const rows = schedules.map((schedule, index) => {
-    const row = document.createElement("div"); row.className = "studio-test-row";
+    const row = document.createElement("div"); row.className = "studio-test-row studio-schedule-row";
     const name = document.createElement("input"); name.value = schedule.name;
     name.setAttribute("aria-label", `Schedule ${index + 1} name`);
     name.onchange = () => { schedule.name = name.value.trim(); studioCommit(); };
     const type = document.createElement("select"); type.setAttribute("aria-label", `Schedule ${index + 1} type`);
-    type.append(new Option("Every N seconds", "interval_seconds"), new Option("Daily at local time", "daily"));
-    type.value = schedule.daily !== undefined ? "daily" : "interval_seconds";
+    type.append(
+      new Option("Every N seconds", "interval_seconds"),
+      new Option("Daily at local time", "daily"),
+      new Option("Cron expression", "cron"),
+      new Option("When a file appears", "watch"),
+      new Option("Webhook call", "webhook"),
+    );
+    type.value = ["daily", "cron", "watch", "webhook"].find((key) => schedule[key] !== undefined) || "interval_seconds";
     type.onchange = () => {
-      delete schedule.daily; delete schedule.interval_seconds;
+      for (const key of ["daily", "interval_seconds", "cron", "watch", "webhook", "poll_seconds"]) delete schedule[key];
       if (type.value === "daily") schedule.daily = "09:00";
+      else if (type.value === "cron") schedule.cron = "0 9 * * mon-fri";
+      else if (type.value === "watch") schedule.watch = "inbox/*.csv";
+      else if (type.value === "webhook") schedule.webhook = "MINIFLOW_HOOK_TOKEN";
       else schedule.interval_seconds = 60;
+      if (type.value === "watch") schedule.poll_seconds = 5;
+      if (["watch", "webhook"].includes(type.value)) delete schedule.catch_up;
       studioCommit(); studioRenderSchedules();
     };
     const value = document.createElement("input");
     value.setAttribute("aria-label", `Schedule ${index + 1} value`);
     value.type = type.value === "daily" ? "time" : "number";
+    if (type.value !== "daily" && type.value !== "interval_seconds") value.type = "text";
     if (value.type === "number") { value.min = "1"; value.step = "1"; }
-    value.value = String(type.value === "daily" ? schedule.daily : schedule.interval_seconds);
+    value.placeholder = type.value === "cron" ? "0 9 * * mon-fri"
+      : type.value === "watch" ? "inbox/*.csv"
+      : type.value === "webhook" ? "TOKEN_ENV_NAME" : "";
+    value.title = type.value === "webhook" ? "Name of the environment variable holding the secret token" : "";
+    value.value = String(schedule[type.value]);
     value.onchange = () => {
-      if (type.value === "daily") schedule.daily = value.value;
-      else schedule.interval_seconds = Number(value.value);
+      schedule[type.value] = type.value === "interval_seconds" ? Number(value.value) : value.value;
       studioCommit();
     };
+    const extra = document.createElement("label"); extra.className = "field";
+    if (type.value === "watch") {
+      const poll = document.createElement("input"); poll.type = "number";
+      poll.min = "1"; poll.step = "1"; poll.value = String(schedule.poll_seconds ?? 5);
+      poll.setAttribute("aria-label", `Schedule ${index + 1} poll seconds`);
+      poll.onchange = () => { schedule.poll_seconds = Number(poll.value); studioCommit(); };
+      extra.append("Check every (s)", poll);
+    } else if (["interval_seconds", "daily", "cron"].includes(type.value)) {
+      const catchUp = document.createElement("input"); catchUp.type = "checkbox";
+      catchUp.checked = !!schedule.catch_up;
+      catchUp.onchange = () => { schedule.catch_up = catchUp.checked; studioCommit(); };
+      extra.append(catchUp, " Catch up after shutdown");
+    }
     const remove = document.createElement("button"); remove.className = "btn danger";
     remove.type = "button"; remove.textContent = "Remove";
     remove.onclick = () => { schedules.splice(index, 1); studioCommit(); studioRenderSchedules(); };
-    row.append(name, type, value, remove);
+    row.append(name, type, value, extra, remove);
     return row;
   });
   const add = document.createElement("button"); add.className = "btn";

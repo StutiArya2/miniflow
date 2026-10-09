@@ -164,6 +164,13 @@ should approve first).
 - AWS request signing is checked against the AWS documentation example and was reproduced with `botocore` once; `read_xlsx` refuses XML with a DTD instead of using `defusedxml`.
 - The database blocks import their driver lazily and say how to install it.
 
+**Milestone 2 (dependable local runs): ✅ implemented.** Cron, catch-up, file and webhook
+triggers, a bounded waiting queue, run retention and success actions are implemented on
+`v3-runs` (design: `docs/superpowers/specs/2026-10-09-v3-m2-runs-design.md`).
+Configurable parallel run slots are implemented for different flows; repeat launches of one
+flow wait in the queue. The browser demo covered the schedule editor, webhook and file trigger;
+the milestone PR remains.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.

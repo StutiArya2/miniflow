@@ -113,6 +113,17 @@ def _run_on_failure(flow: Flow, result: RunResult) -> None:
         print(f"on_failure: ran {name}", file=sys.stderr)
 
 
+def _run_on_success(flow: Flow, result: RunResult) -> None:
+    assert flow.on_success is not None
+    name = flow.on_success.get("block", "?")
+    try:
+        flow.run_on_success(result)
+    except Exception as exc:
+        print(f"on_success: {name} failed: {exc}", file=sys.stderr)
+    else:
+        print(f"on_success: ran {name}", file=sys.stderr)
+
+
 # --------------------------------------------------------------------- output
 def _symbol(state: State, out: TextIO) -> str:
     symbol = _SYMBOLS[state]
@@ -269,6 +280,15 @@ def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
         allow_run=not getattr(args, "read_only", False) and not getattr(args, "ui", False),
         offline=getattr(args, "offline", False),
         schedules=getattr(args, "schedules", False),
+        keep_runs=(
+            None
+            if getattr(args, "keep_days", None) is not None
+            else 100
+            if getattr(args, "keep_runs", None) is None
+            else args.keep_runs
+        ),
+        keep_days=getattr(args, "keep_days", None),
+        max_concurrent=getattr(args, "max_concurrent", 1),
     ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
@@ -367,6 +387,8 @@ def _execute_with(
         _summary(result)
     if spec is not None and spec.on_failure is not None and result.status == "FAILED":
         _run_on_failure(spec, result)
+    if spec is not None and spec.on_success is not None and result.status == "SUCCESS":
+        _run_on_success(spec, result)
     if server is not None and args.ui_wait:
         _serve_until_interrupted(server)
     return {"SUCCESS": 0, "FAILED": 1}.get(result.status, 130)
@@ -492,7 +514,7 @@ def _cmd_ui(args: argparse.Namespace) -> int:
         )
     try:
         server = _start_dashboard(args)
-    except NotADirectoryError as exc:
+    except (NotADirectoryError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
@@ -664,6 +686,17 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
     sv.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
     sv.add_argument("--offline", action="store_true", help="examples use saved data")
+    sv.add_argument(
+        "--max-concurrent", type=int, default=1, metavar="N",
+        help="run up to N different flows at once (default 1)",
+    )  # fmt: skip
+    retention = sv.add_mutually_exclusive_group()
+    retention.add_argument(
+        "--keep-runs", type=int, metavar="N", help="keep the newest N runs per flow (default 100)"
+    )
+    retention.add_argument(
+        "--keep-days", type=float, metavar="D", help="keep runs started in the last D days"
+    )
     dashboard_options(sv)
     sv.set_defaults(func=_cmd_ui, schedules=True, read_only=False)
 
