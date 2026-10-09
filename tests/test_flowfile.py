@@ -11,6 +11,7 @@ import pytest
 
 from miniflow import Scheduler, State, StateStore
 from miniflow.blocks import Setting, block
+from miniflow.cli import main
 from miniflow.flowfile import FlowFileError, load_json_flow
 
 
@@ -213,6 +214,20 @@ def test_on_failure_gets_the_failure(folder, tmp_path):
     saved = json.loads((folder / "failure.json").read_text(encoding="utf-8"))
     assert saved["step"] == "missing"
     assert "no such file" in saved["error"]
+
+
+def test_on_success_runs_after_a_successful_flow(folder, tmp_path, capsys):
+    spec = {
+        "steps": {"say": {"block": "log", "settings": {"message": "done"}}},
+        "on_success": {
+            "block": "write_json",
+            "settings": {"path": "success.json", "data": {"message": "{{ say.message }}"}},
+        },
+    }
+    path = write(folder, "success", spec)
+    assert main(["run", str(path), "--db", str(tmp_path / "success.db"), "--quiet"]) == 0
+    assert json.loads((folder / "success.json").read_text(encoding="utf-8")) == {"message": "done"}
+    assert "on_success: ran write_json" in capsys.readouterr().err
 
 
 # ----------------------------------------------------------------- checking

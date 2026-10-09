@@ -379,6 +379,14 @@ class StateStore:
                 (flow, schedule, due_at, self._now(), status, message),
             )
 
+    def last_schedule_due(self, flow: str, schedule: str) -> float | None:
+        """The latest time a schedule was due according to its recorded events, if any."""
+        rows = self._query(
+            "SELECT MAX(due_at) FROM schedule_events WHERE flow = ? AND schedule = ?",
+            (flow, schedule),
+        )
+        return None if rows[0][0] is None else float(rows[0][0])
+
     def list_schedule_events(self, limit: int = 50) -> list[ScheduleEvent]:
         rows = self._query(
             "SELECT id, flow, schedule, due_at, recorded_at, status, message"
@@ -386,6 +394,60 @@ class StateStore:
             (limit,),
         )
         return [ScheduleEvent(*row) for row in rows]
+
+    def prune_history(
+        self, *, keep_runs: int | None = 100, keep_days: float | None = None,
+        keep_events: int = 5000,
+    ) -> tuple[int, int]:  # fmt: skip
+        """Remove old finished runs and schedule events; preserve active runs and catch-up anchors.
+
+        Choose either a per-flow run count or an age limit. SQLite can reuse the freed pages.
+        Returns ``(runs_removed, events_removed)``.
+        """
+        if (keep_runs is None) == (keep_days is None):
+            raise ValueError("choose either keep_runs or keep_days")
+        if keep_runs is not None and keep_runs < 1:
+            raise ValueError("keep_runs must be at least 1")
+        if keep_days is not None and keep_days <= 0:
+            raise ValueError("keep_days must be positive")
+        if keep_events < 1:
+            raise ValueError("keep_events must be at least 1")
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT run_id, flow, started_at, finished_at FROM runs"
+                " ORDER BY started_at DESC, rowid DESC"
+            ).fetchall()
+            counts: dict[str, int] = {}
+            cutoff = time.time() - keep_days * 86400 if keep_days is not None else None
+            remove: list[str] = []
+            for run_id, flow, started_at, finished_at in rows:
+                counts[flow] = counts.get(flow, 0) + 1
+                if finished_at is None:
+                    continue
+                if (keep_runs is not None and counts[flow] > keep_runs) or (
+                    cutoff is not None and started_at < cutoff
+                ):
+                    remove.append(run_id)
+            for run_id in remove:
+                self._conn.execute("DELETE FROM attempts WHERE run_id = ?", (run_id,))
+                self._conn.execute("DELETE FROM task_states WHERE run_id = ?", (run_id,))
+                self._conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
+            events = self._conn.execute(
+                "SELECT id, flow, schedule FROM schedule_events ORDER BY id DESC"
+            ).fetchall()
+            anchors: set[tuple[str, str]] = set()
+            old_events: list[int] = []
+            for position, (event_id, flow, schedule) in enumerate(events):
+                key = (flow, schedule)
+                if position < keep_events or key not in anchors:
+                    anchors.add(key)
+                else:
+                    old_events.append(event_id)
+            self._conn.executemany(
+                "DELETE FROM schedule_events WHERE id = ?", [(event_id,) for event_id in old_events]
+            )
+        return len(remove), len(old_events)
 
     # ------------------------------------------------------------------- reads
     def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:

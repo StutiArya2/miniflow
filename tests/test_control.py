@@ -119,7 +119,7 @@ def task_running(store: StateStore, flow: str, name: str) -> bool:
 
 # ------------------------------------------------------------------ flows
 def test_lists_only_public_python_files(controller):
-    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None}
+    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None, "queued": []}
 
 
 def test_missing_flows_folder_is_rejected(tmp_path, store):
@@ -232,7 +232,7 @@ def test_cancel_interrupts_and_resume_reuses_finished_tasks(flows_dir, store):
     assert time.monotonic() - started < 10
     first = run_of(store, "sleepy")
     assert status_of(store, first) == "INTERRUPTED"
-    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None}
+    assert controller.status() == {"flows": FLOW_NAMES, "active": None, "error": None, "queued": []}
 
     active = controller.resume(first, 0.0)
     assert active["action"] == "resume"

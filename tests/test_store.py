@@ -78,6 +78,37 @@ def test_get_graph_unknown_run(store: StateStore) -> None:
         store.get_graph("nope")
 
 
+def test_prune_history_keeps_recent_runs_and_schedule_anchors(store: StateStore, dag: DAG) -> None:
+    old = store.create_run("sales", dag)
+    store.record_attempt(old, "a", 1, State.SUCCESS, None, 1.0, 2.0)
+    store.finish_run(old, "SUCCESS")
+    recent = store.create_run("sales", dag)
+    store.finish_run(recent, "SUCCESS")
+    other = store.create_run("other", dag)
+    store.finish_run(other, "SUCCESS")
+    active = store.create_run("sales", dag)
+    for i in range(4):
+        store.record_schedule_event("sales", "daily", float(i), "LAUNCHED")
+    store.record_schedule_event("other", "weekly", 1.0, "LAUNCHED")
+
+    assert store.prune_history(keep_runs=1, keep_events=1) == (2, 3)
+    assert {r.run_id for r in store.list_runs()} == {other, active}
+    assert store.attempts(old) == []
+    assert store.changes_since(old, 0) == []
+    assert store.last_schedule_due("sales", "daily") == 3.0
+    assert store.last_schedule_due("other", "weekly") == 1.0
+
+
+def test_prune_history_by_age_preserves_running_run(store: StateStore, dag: DAG) -> None:
+    old = store.create_run("sales", dag)
+    store.finish_run(old, "SUCCESS")
+    active = store.create_run("sales", dag)
+    store._conn.execute("UPDATE runs SET started_at = ?", (time.time() - 10 * 86400,))
+    store._conn.commit()
+    assert store.prune_history(keep_runs=None, keep_days=7) == (1, 0)
+    assert [run.run_id for run in store.list_runs()] == [active]
+
+
 def test_set_state_transitions_and_timestamps(store: StateStore, dag: DAG) -> None:
     run_id = store.create_run("f", dag)
     store.set_state(run_id, "a", State.READY)

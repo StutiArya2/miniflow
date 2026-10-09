@@ -342,7 +342,7 @@ def test_controls_are_off_without_flows(server):
 def test_control_status_lists_flows(control_server):
     assert call(control_server, "GET", "/api/control") == (
         200,
-        {"flows": ["hello", "sleepy"], "active": None, "error": None},
+        {"flows": ["hello", "sleepy"], "active": None, "error": None, "queued": []},
     )
 
 
@@ -450,7 +450,9 @@ def test_ui_command_with_flows(tmp_path, monkeypatch, flows_dir):
     )
     args = ["ui", "--db", str(tmp_path / "c.db"), "--flows", str(flows_dir)]
     assert main([*args, "--no-browser", "--port", "0"]) == 0
-    assert served == [(200, {"flows": ["hello", "sleepy"], "active": None, "error": None})]
+    assert served == [
+        (200, {"flows": ["hello", "sleepy"], "active": None, "error": None, "queued": []})
+    ]
 
 
 def test_ui_command_with_missing_flows_folder(tmp_path, capsys):

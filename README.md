@@ -72,7 +72,8 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
     "big":   {"block": "filter", "settings": {"rows": "{{ sales }}", "where": "amount > {{ params.min }}"}},
     "save":  {"block": "write_csv", "settings": {"rows": "{{ big }}", "path": "out/big.csv"}, "retries": 2}
   },
-  "on_failure": {"block": "log", "settings": {"message": "failed at {{ failure.step }}", "level": "error"}}
+  "on_failure": {"block": "log", "settings": {"message": "failed at {{ failure.step }}", "level": "error"}},
+  "on_success": {"block": "log", "settings": {"message": "saved {{ save.rows }} rows"}}
 }
 ```
 
@@ -144,11 +145,16 @@ in the run graph.
   Steps whose settings changed since that run, and the steps after them, are greyed out.
 
 For unattended local runs, add a schedule in the editor's **Schedules** panel and start
-`miniflow serve --flows examples --db miniflow.db`. A flow can have named interval schedules
-(`{"name": "frequent", "interval_seconds": 60}`) or daily local-time schedules
-(`{"name": "morning", "daily": "09:00"`). The dashboard shows each next run and records
-launched, missed and failed launches. Scheduled runs appear in the same history and inspection
-views as manual runs. Keep the `serve` process running on the laptop for schedules to fire.
+`miniflow serve --flows examples --db miniflow.db`. A flow can run every N seconds, daily at
+local time, or from a five-field cron expression such as `0 9 * * mon-fri`. Set `catch_up` to
+run once after the dashboard was off during scheduled times. A file watch such as
+`{"name": "inbox", "watch": "inbox/*.csv"}` starts after a new file stops changing. A webhook
+schedule names an environment variable holding its token; call `/api/hooks/FLOW/NAME` with
+`Authorization: Bearer TOKEN` and a JSON body. Trigger details reach the flow as
+`{{ env.MINIFLOW_TRIGGER }}`. Scheduled and triggered runs wait in a bounded queue while another
+run is active; the dashboard shows queued runs and launch events. `serve` keeps the newest 100
+runs per flow by default; use `--keep-runs N` or `--keep-days D` to choose retention. Keep the
+`serve` process running on the laptop for schedules and file watches to fire.
 
 ## Dashboard
 

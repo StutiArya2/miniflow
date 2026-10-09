@@ -10,6 +10,12 @@ process with ``MINIFLOW_FAIL_RATE`` set from the dashboard. It behaves exactly
 like a run started in a terminal and writes to the same state database that the
 dashboard reads, so the live view needs nothing extra. One run is active at a time.
 
+Runs started by schedules and triggers (:meth:`RunController.enqueue`) wait in a first-in,
+first-out queue when a run is active, instead of being refused; the Run button of a person
+still says "still running". The queue holds at most ``max_queue`` runs, and one source
+(for example ``schedule:nightly``) can wait only once. A trigger's details reach the flow in
+the ``MINIFLOW_TRIGGER`` environment variable, as JSON.
+
 :meth:`RunController.cancel` sends the process the interrupt that Ctrl+C sends
 (Ctrl+Break on Windows, which :func:`miniflow.cli.entry` turns into
 ``KeyboardInterrupt``), so the scheduler marks the run INTERRUPTED and it can be
@@ -21,6 +27,8 @@ a run whose process died without finishing it, and reports that as an error.
 from __future__ import annotations
 
 import contextlib
+import json
+import logging
 import os
 import re
 import signal
@@ -29,6 +37,8 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
@@ -39,7 +49,10 @@ from miniflow.store import RunRecord, StateStore
 
 __all__ = ["ControlError", "RunController"]
 
+log = logging.getLogger("miniflow.ui")
+
 _ERROR_LINES = 20
+_DEFAULT_MAX_QUEUE = 20
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 # Each run gets its own process group, so it can be interrupted or killed with its workers.
@@ -66,9 +79,25 @@ class _Child:
     launched_at: float
     run_id: str | None = None
     cancelled: bool = field(default=False)
+    source: str = ""
+    on_finish: Callable[[str | None], None] | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {"action": self.action, "flow": self.flow, "run_id": self.run_id}
+
+
+@dataclass
+class _Queued:
+    """A scheduled or triggered run waiting for the active run to finish."""
+
+    flow: str
+    path: Path
+    extra: list[str]
+    source: str
+    trigger: dict[str, Any] | None
+    queued_at: float
+    on_start: Callable[[], None] | None = None
+    on_finish: Callable[[str | None], None] | None = None
 
 
 def _check_rate(value: object) -> float:
@@ -105,8 +134,9 @@ class RunController:
     """Launches and stops flow runs for the dashboard; safe to call from any thread."""
 
     def __init__(
-        self, flows_dir: str | os.PathLike[str], store: StateStore, grace: float = 5.0
-    ) -> None:
+        self, flows_dir: str | os.PathLike[str], store: StateStore, grace: float = 5.0,
+        *, keep_runs: int | None = 100, keep_days: float | None = None,
+    ) -> None:  # fmt: skip
         folder = Path(flows_dir)
         if not folder.is_dir():
             raise NotADirectoryError(f"flows folder {folder} doesn't exist")
@@ -122,6 +152,11 @@ class RunController:
         self._lock = threading.Lock()
         self._child: _Child | None = None
         self._error: str | None = None
+        self._queue: deque[_Queued] = deque()
+        self.max_queue = _DEFAULT_MAX_QUEUE
+        self.keep_runs = keep_runs
+        self.keep_days = keep_days
+        self.store.prune_history(keep_runs=keep_runs, keep_days=keep_days)
 
     # ---------------------------------------------------------------- actions
     def start(self, flow: str, fail_rate: object, environment: object = None) -> dict[str, Any]:
@@ -176,8 +211,48 @@ class RunController:
             raise ControlError(f"no environment {environment!r}", HTTPStatus.BAD_REQUEST)
         return ["--environment", environment]
 
+    def enqueue(
+        self,
+        flow: str,
+        *,
+        source: str,
+        environment: object = None,
+        trigger: dict[str, Any] | None = None,
+        on_start: Callable[[], None] | None = None,
+        on_finish: Callable[[str | None], None] | None = None,
+    ) -> str:
+        """Run ``flow`` now, or queue it if a run is active: returns ``"started"`` or ``"queued"``.
+
+        ``on_start()`` is called when the run starts (now or later) and ``on_finish(error)``
+        when it ends, with a message if its process failed rather than the flow. ``source``
+        names what asked (``schedule:nightly``); it can wait in the queue only once.
+        """
+        path = self.flows.get(flow)
+        if path is None:
+            raise ControlError(f"no flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
+        item = _Queued(
+            flow, path, self._environment_args(path, environment), source, trigger, time.time(),
+            on_start, on_finish,
+        )  # fmt: skip
+        with self._lock:
+            self._reap()
+            if self._child is None and not self._queue:
+                self._spawn_item(item)
+                return "started"
+            if any(q.source == source for q in self._queue):
+                raise ControlError(f"{source} is already waiting in the queue", HTTPStatus.CONFLICT)
+            if len(self._queue) >= self.max_queue:
+                raise ControlError(
+                    f"the run queue is full ({self.max_queue} waiting)",
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                )
+            self._queue.append(item)
+            return "queued"
+
     def cancel(self) -> None:
-        """Stop the active run and return once its process has exited."""
+        """Stop the active run and return once its process has exited.
+
+        Runs waiting in the queue are not affected; the next one starts."""
         with self._lock:
             self._reap()
             child = self._child
@@ -202,6 +277,10 @@ class RunController:
                 "flows": list(self.flows),
                 "active": self._child.as_json() if self._child else None,
                 "error": self._error,
+                "queued": [
+                    {"flow": q.flow, "source": q.source, "queued_at": q.queued_at}
+                    for q in self._queue
+                ],
             }
 
     def add_flow(self, name: str, path: Path) -> None:
@@ -211,7 +290,9 @@ class RunController:
             self.flows = dict(sorted(self.flows.items()))
 
     def shutdown(self) -> None:
-        """Cancel the active run, if there is one (when the dashboard stops)."""
+        """Drop the queue and cancel the active run (when the dashboard stops)."""
+        with self._lock:
+            self._queue.clear()
         with contextlib.suppress(ControlError):
             self.cancel()
 
@@ -223,28 +304,66 @@ class RunController:
             self._reap()
             if self._child is not None:
                 raise ControlError(f"{self._child.flow} is still running", HTTPStatus.CONFLICT)
-            command = "run" if action == "partial" else action
-            cmd = [sys.executable, "-m", "miniflow", command, str(path), "--db", self.db, "--quiet"]
-            env = {**os.environ, "MINIFLOW_FAIL_RATE": f"{rate:g}"}
-            # Not a pipe, so a chatty run can't block; kept open until _finish reads it.
-            stderr = tempfile.TemporaryFile()  # noqa: SIM115
-            launched_at = time.time()
-            try:
-                proc = subprocess.Popen(
-                    [*cmd, *extra],
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=stderr,
-                    creationflags=_CREATIONFLAGS,
-                    start_new_session=_NEW_SESSION,
-                )
-            except OSError:
-                stderr.close()
-                raise
-            self._child = _Child(action, flow, proc, stderr, launched_at)
-            self._error = None
-            return self._child.as_json()
+            return self._spawn(action, flow, path, rate, extra)
+
+    def _spawn_item(self, item: _Queued) -> None:
+        self._spawn(
+            "run", item.flow, item.path, 0.0, item.extra,
+            trigger=item.trigger, source=item.source,
+            on_start=item.on_start, on_finish=item.on_finish,
+        )  # fmt: skip
+
+    def _spawn(
+        self,
+        action: str,
+        flow: str,
+        path: Path,
+        rate: float,
+        extra: list[str],
+        *,
+        trigger: dict[str, Any] | None = None,
+        source: str = "",
+        on_start: Callable[[], None] | None = None,
+        on_finish: Callable[[str | None], None] | None = None,
+    ) -> dict[str, Any]:
+        """Start the run's process (the lock is held and no run is active)."""
+        command = "run" if action == "partial" else action
+        cmd = [sys.executable, "-m", "miniflow", command, str(path), "--db", self.db, "--quiet"]
+        env = {**os.environ, "MINIFLOW_FAIL_RATE": f"{rate:g}"}
+        env.pop("MINIFLOW_TRIGGER", None)
+        if trigger is not None:
+            env["MINIFLOW_TRIGGER"] = json.dumps(trigger, separators=(",", ":"), sort_keys=True)
+        # Not a pipe, so a chatty run can't block; kept open until _finish reads it.
+        stderr = tempfile.TemporaryFile()  # noqa: SIM115
+        launched_at = time.time()
+        try:
+            proc = subprocess.Popen(
+                [*cmd, *extra],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                creationflags=_CREATIONFLAGS,
+                start_new_session=_NEW_SESSION,
+            )
+        except OSError:
+            stderr.close()
+            raise
+        self._child = _Child(
+            action, flow, proc, stderr, launched_at, source=source, on_finish=on_finish
+        )
+        self._error = None
+        if on_start is not None:
+            self._notify(on_start)
+        return self._child.as_json()
+
+    @staticmethod
+    def _notify(callback: Callable[..., None], *args: Any) -> None:
+        """Callbacks are the schedule service's bookkeeping; they must not break a run."""
+        try:
+            callback(*args)
+        except Exception:
+            log.exception("run callback failed")
 
     def _run(self, run_id: str) -> RunRecord | None:
         return next((r for r in self.store.list_runs() if r.run_id == run_id), None)
@@ -270,6 +389,25 @@ class RunController:
 
     def _finish(self, child: _Child) -> None:
         """Called with the lock held once the child has exited."""
+        self._close(child)
+        if child.on_finish is not None:
+            self._notify(child.on_finish, self._error)
+        self.store.prune_history(keep_runs=self.keep_runs, keep_days=self.keep_days)
+        self._start_next()
+
+    def _start_next(self) -> None:
+        """Start the oldest queued run, skipping any that cannot start."""
+        while self._queue and self._child is None:
+            item = self._queue.popleft()
+            try:
+                self._spawn_item(item)
+            except OSError as exc:
+                self._error = f"{item.flow} could not start: {exc}"
+                if item.on_finish is not None:
+                    self._notify(item.on_finish, self._error)
+
+    def _close(self, child: _Child) -> None:
+        """Clean up after an exited child: free the slot, read its output, fix its run."""
         self._child = None
         tail = _tail(child.stderr)
         child.stderr.close()

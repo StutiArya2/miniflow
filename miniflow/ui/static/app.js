@@ -765,13 +765,21 @@ async function loadSchedules() {
     if (!response.ok) return;
     const data = await response.json();
     const panel = $("schedules-panel");
-    panel.hidden = !data.schedules.length && !data.events.length && !Object.keys(data.problems).length;
+    panel.hidden = !data.schedules.length && !data.events.length && !data.queued?.length && !Object.keys(data.problems).length;
     if (panel.hidden) return;
+    const scheduleLabel = (item) => item.cron ? `Cron ${item.cron}`
+      : item.daily ? `Daily ${item.daily}`
+      : item.interval_seconds != null ? `Every ${item.interval_seconds}s`
+      : item.watch ? `Watch ${item.watch} · check every ${item.poll_seconds}s`
+      : item.configured ? `Webhook ${item.url}` : `Webhook ${item.url} · set ${item.webhook}`;
     $("schedules-body").replaceChildren(...data.schedules.map((item) =>
       h("div", { class: "schedule-row" },
         h("strong", {}, `${item.flow} · ${item.name}`),
-        h("span", {}, item.daily ? `Daily ${item.daily}` : `Every ${item.interval_seconds}s`),
-        h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`))));
+        h("span", {}, scheduleLabel(item)),
+        item.next_run != null ? h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`) : null)));
+    const queued = (data.queued || []).map((item, index) =>
+      h("div", { class: "schedule-row" }, pill("QUEUED"),
+        h("span", {}, `${index + 1}. ${item.flow} · ${item.source}`)));
     const events = data.events.slice(0, 8).map((event) =>
       h("div", { class: "schedule-row" },
         pill(event.status),
@@ -779,7 +787,7 @@ async function loadSchedules() {
         event.message ? h("span", { class: "muted" }, event.message) : null));
     const problems = Object.entries(data.problems).map(([flow, message]) =>
       h("p", { class: "error" }, `${flow}: ${message}`));
-    $("schedule-events").replaceChildren(...events, ...problems);
+    $("schedule-events").replaceChildren(...queued, ...events, ...problems);
   } catch { /* dashboard is still usable if a schedule read fails */ }
 }
 
