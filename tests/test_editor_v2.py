@@ -242,3 +242,28 @@ def test_editor_scripts_support_palette_drag_and_drop(tmp_path: Path):
     assert "studioDraggable(button" in editor  # blocks and reusable flows are draggable
     assert "studioDropInit(host)" in view  # the canvas accepts drops
     assert 'addEventListener("drop"' in view
+
+
+def test_editor_reports_parts_that_failed_to_load(tmp_path: Path):
+    """A dashboard older than the editor scripts must say so, not show an empty palette."""
+    import http.client
+    from urllib.parse import urlsplit
+
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        url = urlsplit(server.url)
+        conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+        conn.request("GET", "/static/editor.js")
+        editor = conn.getresponse().read().decode()
+        conn.close()
+        served = {}
+        for name in ("editor-history.js", "editor-view.js", "editor-versions.js", "editor-data.js"):
+            conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+            conn.request("GET", f"/static/{name}")
+            served[name] = conn.getresponse().read().decode()
+            conn.close()
+    # every function the editor checks for is defined by one of the scripts it loads
+    start = editor.index("const STUDIO_PARTS = [") + len("const STUDIO_PARTS = [")
+    parts = [p.strip().strip('"') for p in editor[start : editor.index("]", start)].split(",")]
+    assert parts
+    for part in parts:
+        assert any(f"function {part}(" in text for text in [editor, *served.values()]), part

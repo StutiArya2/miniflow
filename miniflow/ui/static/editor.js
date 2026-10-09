@@ -628,7 +628,29 @@ async function studioPartial() {
   } catch (error) { studioMessage(String(error), true); }
 }
 
+/* Functions the editor needs from its other script files (editor-*.js). */
+const STUDIO_PARTS = ["studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate"];
+
+/* If an older dashboard process can't serve the newer script files, say so instead of
+ * showing an empty palette. */
+function studioPartsMissing() {
+  return STUDIO_PARTS.filter((name) => typeof window[name] !== "function");
+}
+
 async function studioInit() {
+  const missing = studioPartsMissing();
+  if (missing.length) {
+    const button = document.getElementById("view-editor");
+    button.hidden = false;
+    const explain = () => studioMessage("Part of the editor didn't load (missing " + missing.join(", ")
+      + "). The dashboard is probably older than these files: stop it (Ctrl+C), start it again "
+      + "(miniflow ui or miniflow serve), then reload this page.", true);
+    button.onclick = () => {
+      try { studioShow(true); } catch { /* drawing the editor needs the missing parts */ }
+      explain();
+    };
+    return;
+  }
   try {
     const [catalog, , environments, subflows, templates] = await Promise.all([
       studioApi("/api/blocks"), studioList(), studioApi("/api/environments"),
