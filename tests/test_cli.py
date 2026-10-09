@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -97,6 +98,68 @@ def test_run_example_pipeline(tmp_path, capsys):
 def test_quiet_run(tmp_path, capsys):
     assert main(["run", str(EXAMPLE), "--db", str(tmp_path / "s.db"), "--quiet"]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_run_until_reuses_only_matching_steps(tmp_path):
+    source = tmp_path / "sales.csv"
+    source.write_text("name,price\npen,120\n", encoding="utf-8")
+    flow = tmp_path / "partial.json"
+    document = {
+        "params": {"minimum": {"type": "int", "default": 100}},
+        "steps": {
+            "sales": {"block": "read_csv", "settings": {"path": "sales.csv"}},
+            "selected": {
+                "block": "filter",
+                "settings": {"rows": "{{ sales }}", "where": "price > {{ params.minimum }}"},
+            },
+            "later": {"block": "log", "settings": {"message": "done"}, "after": ["selected"]},
+        },
+    }
+    flow.write_text(json.dumps(document), encoding="utf-8")
+    db = tmp_path / "partial.db"
+    assert main(["run", str(flow), "--db", str(db), "--quiet"]) == 0
+    with StateStore(db) as store:
+        first = store.latest_run("partial")
+    assert first is not None
+    assert (
+        main(
+            [
+                "run",
+                str(flow),
+                "--db",
+                str(db),
+                "--quiet",
+                "--until",
+                "selected",
+                "--reuse",
+                first,
+                "--param",
+                "minimum=130",
+            ]
+        )
+        == 0
+    )
+    with StateStore(db) as store:
+        second = store.latest_run("partial")
+        assert second is not None
+        assert second != first
+        assert store.get_states(second) == {"sales": State.SUCCESS, "selected": State.SUCCESS}
+        rows = {row.task: row for row in store.changes_since(second, 0)}
+        assert rows["sales"].from_cache
+        assert not rows["selected"].from_cache
+    source.write_text("name,price\npen,120\ncup,135\n", encoding="utf-8")
+    assert (
+        main(
+            ["run", str(flow), "--db", str(db), "--quiet", "--until", "selected", "--reuse", first]
+        )
+        == 0
+    )
+    with StateStore(db) as store:
+        third = store.latest_run("partial")
+        assert third is not None
+        rows = {row.task: row for row in store.changes_since(third, 0)}
+        assert not rows["sales"].from_cache
+        assert not rows["selected"].from_cache
 
 
 def test_failed_run_then_resume(tmp_path, capsys, monkeypatch):

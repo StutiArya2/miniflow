@@ -19,6 +19,8 @@
     </div>
     <div class="run-meta" id="run-meta" aria-live="polite"></div>
     <div class="actions">
+      <button type="button" id="view-editor" class="btn" hidden>Editor</button>
+      <button type="button" id="view-runs" class="btn" hidden>Runs</button>
       <label class="follow" title="Switch to new runs automatically">
         <input type="checkbox" id="follow" checked> Follow latest
       </label>
@@ -27,18 +29,107 @@
   </header>
 
   <main id="app">
+    <section id="studio" class="studio" hidden aria-label="Workflow editor">
+      <div class="studio-toolbar panel">
+        <label>Flow <select id="studio-flow"></select></label>
+        <button type="button" id="studio-new" class="btn">New</button>
+        <label>Starter <select id="studio-template"></select></label>
+        <button type="button" id="studio-use-template" class="btn">Use starter</button>
+        <label>Name <input id="studio-name" autocomplete="off" pattern="[A-Za-z_][A-Za-z0-9_\-]*"></label>
+        <label>Environment <select id="studio-environment"><option value="">Default</option></select></label>
+        <button type="button" id="studio-validate" class="btn">Validate</button>
+        <button type="button" id="studio-test" class="btn">Test</button>
+        <label>Save note <input id="studio-save-message" autocomplete="off" placeholder="What changed? (optional)"></label>
+        <button type="button" id="studio-save" class="btn">Save</button>
+        <button type="button" id="studio-run" class="btn primary">▶ Run</button>
+        <button type="button" id="studio-partial" class="btn">Run up to selected</button>
+      </div>
+      <details id="studio-test-panel" class="panel studio-test-panel">
+        <summary>Flow tests <span class="hint">Sample inputs and expected results</span></summary>
+        <div id="studio-test-editor"></div>
+      </details>
+      <details id="studio-schedule-panel" class="panel studio-test-panel">
+        <summary>Schedules <span class="hint">Run this flow locally at an interval or time of day</span></summary>
+        <div id="studio-schedule-editor"></div>
+      </details>
+      <details id="studio-history-panel" class="panel studio-test-panel">
+        <summary>History <span class="hint">Earlier saved versions: see what changed, or restore one</span></summary>
+        <div id="studio-history"></div>
+      </details>
+      <details id="studio-params-panel" class="panel studio-test-panel">
+        <summary>Parameters <span class="hint">Values you can reuse as {{ params.name }} in block settings</span></summary>
+        <div id="studio-params-editor"></div>
+      </details>
+      <div class="studio-layout">
+        <aside class="studio-palette panel">
+          <h2>Blocks</h2>
+          <label class="sr-only" for="studio-search">Search blocks</label>
+          <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
+          <div id="studio-blocks" class="studio-blocks"></div>
+          <h3>Reusable flows</h3>
+          <div id="studio-subflows" class="studio-blocks"></div>
+        </aside>
+        <div class="studio-center">
+          <div class="studio-canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button type="button" id="studio-undo" class="btn" title="Undo (Ctrl+Z)">↶ Undo</button>
+            <button type="button" id="studio-redo" class="btn" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-copy" class="btn" title="Copy selected steps (Ctrl+C)">Copy</button>
+            <button type="button" id="studio-paste" class="btn" title="Paste (Ctrl+V)">Paste</button>
+            <button type="button" id="studio-duplicate" class="btn" title="Duplicate (Ctrl+D)">Duplicate</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-zoom-out" class="btn" title="Zoom out" aria-label="Zoom out">−</button>
+            <span id="studio-zoom-level" class="studio-zoom-level">100%</span>
+            <button type="button" id="studio-zoom-in" class="btn" title="Zoom in" aria-label="Zoom in">+</button>
+            <button type="button" id="studio-fit" class="btn" title="Fit the flow on screen">Fit</button>
+            <button type="button" id="studio-tidy" class="btn" title="Arrange steps by dependency">Tidy up</button>
+            <label class="studio-run-pick">Show run <select id="studio-run-data"><option value="">No runs yet</option></select></label>
+          </div>
+          <div class="studio-canvas-scroll">
+            <div id="studio-canvas" class="studio-canvas" aria-label="Workflow canvas">
+              <svg id="studio-wires" aria-hidden="true"></svg>
+              <div id="studio-nodes"></div>
+            </div>
+          </div>
+          <div id="studio-message" class="studio-message" role="status">Select a block to configure it.</div>
+        </div>
+        <aside class="studio-inspector panel">
+          <h2 id="studio-inspector-title">Settings</h2>
+          <div id="studio-settings"><p class="muted">Select a node on the canvas.</p></div>
+        </aside>
+      </div>
+    </section>
+    <section class="panel" id="schedules-panel" aria-labelledby="schedules-title" hidden>
+      <div class="panel-head"><h2 id="schedules-title">Schedules</h2><p class="hint">Local laptop time</p></div>
+      <div id="schedules-body"></div>
+      <div id="schedule-events"></div>
+    </section>
     <details class="panel gallery" id="gallery" open>
-      <summary>
-        <h2>Try a real-world example</h2>
-        <span class="hint" id="gallery-hint">Each one works with live public data. Pick one and watch it run.</span>
-      </summary>
+      <summary><h2>Try a real-world example</h2><span class="hint" id="gallery-hint">Pick one and watch it run.</span></summary>
       <div class="cards" id="example-cards"></div>
     </details>
+    <section id="control" class="panel control" aria-label="Run controls" hidden>
+      <label class="field">Flow <select id="ctl-flow"></select></label>
+      <label class="field" title="Sets MINIFLOW_FAIL_RATE for the run; only flows that read it are affected">
+        Fault rate
+        <input type="range" id="ctl-rate" min="0" max="100" step="5" value="40">
+        <output id="ctl-rate-value" for="ctl-rate">40%</output>
+      </label>
+      <button type="button" id="ctl-run" class="btn primary">▶ Run</button>
+      <button type="button" id="ctl-resume" class="btn" hidden>↻ Resume this run</button>
+      <span id="ctl-active" class="ctl-active" aria-live="polite" hidden></span>
+      <button type="button" id="ctl-cancel" class="btn danger" hidden>■ Cancel</button>
+      <pre id="ctl-error" class="error ctl-error" role="alert" hidden></pre>
+    </section>
 
     <section id="empty" class="empty" hidden>
       <h1>No runs yet</h1>
-      <p>Start one of the examples above, or run your own flow from a terminal:</p>
-      <pre><code>miniflow run my_flow.py --ui</code></pre>
+      <div id="empty-cli">
+        <p>Start one and it will appear here live:</p>
+        <pre><code>miniflow run examples/pipeline.py --ui</code></pre>
+      </div>
+      <p id="empty-control" hidden>Pick a flow above and press <strong>▶ Run</strong>.</p>
+      <p class="muted" id="empty-db"></p>
     </section>
 
     <section id="dashboard" hidden>
@@ -66,6 +157,11 @@
       <section class="panel outcome" id="outcome" aria-labelledby="outcome-title">
         <div class="panel-head"><h2 id="outcome-title">What this run found</h2></div>
         <div id="outcome-body"></div>
+      </section>
+
+      <section class="panel" id="run-problems" aria-labelledby="run-problems-title" hidden>
+        <div class="panel-head"><h2 id="run-problems-title">Problems to fix</h2></div>
+        <div id="run-problems-body"></div>
       </section>
 
       <div class="grid">
@@ -103,5 +199,10 @@
   </main>
 
   <script src="/static/app.js"></script>
+  <script src="/static/editor-history.js"></script>
+  <script src="/static/editor-view.js"></script>
+  <script src="/static/editor-versions.js"></script>
+  <script src="/static/editor-data.js"></script>
+  <script src="/static/editor.js"></script>
 </body>
 </html>

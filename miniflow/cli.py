@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -16,10 +18,14 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TextIO
 
+from miniflow.blocks import BlockError, all_blocks, get_block, load_plugins, type_name
 from miniflow.executors import ExecutorRouter
+from miniflow.flowfile import Flow, FlowFileError, load_json_flow
+from miniflow.flowtest import run_flow_tests
 from miniflow.graph import DAG, GraphError
 from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
+from miniflow.signature import config_signature, step_signature
 from miniflow.states import State
 from miniflow.store import StateStore
 from miniflow.ui.server import DashboardServer
@@ -60,6 +66,51 @@ def load_flow(path: str | Path) -> tuple[types.ModuleType, DAG]:
         sys.path.insert(0, str(p.parent))
     spec.loader.exec_module(module)
     return module, DAG.from_module(module)
+
+
+class _UsageError(Exception):
+    """A command-line mistake, reported as ``error: ...`` with exit code 2."""
+
+
+def _parse_params(items: Sequence[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            raise _UsageError(f"--param {item!r}: write it as NAME=VALUE")
+        out[name.strip()] = value
+    return out
+
+
+def _load(args: argparse.Namespace) -> tuple[str, DAG, Flow | None]:
+    """``(flow name, DAG, Flow or None)`` for a ``.py`` or ``.json`` flow file."""
+    if getattr(args, "example", False):
+        from miniflow.examples import load
+
+        return args.flow, load(args.flow)[1], None
+    path = Path(args.flow)
+    params = _parse_params(getattr(args, "param", None))
+    environment = getattr(args, "environment", None)
+    if path.suffix.lower() == ".json":
+        flow = load_json_flow(
+            path, params=params, environment=environment, blocks=getattr(args, "blocks", None) or ()
+        )
+        return flow.name, flow.dag, flow
+    if params or environment:
+        raise _UsageError("--param and --environment only apply to JSON flows")
+    _, dag = load_flow(path)
+    return path.stem, dag, None
+
+
+def _run_on_failure(flow: Flow, result: RunResult) -> None:
+    assert flow.on_failure is not None
+    name = flow.on_failure.get("block", "?")
+    try:
+        flow.run_on_failure(result)
+    except Exception as exc:
+        print(f"on_failure: {name} failed as well: {exc}", file=sys.stderr)
+    else:
+        print(f"on_failure: ran {name}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------- output
@@ -210,9 +261,14 @@ def _summary(result: RunResult, out: TextIO | None = None) -> None:
 
 
 # ------------------------------------------------------------------- commands
-def _start_dashboard(args: argparse.Namespace, allow_run: bool = False) -> DashboardServer:
+def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
     server = DashboardServer(
-        args.db, port=args.port, allow_run=allow_run, offline=getattr(args, "offline", False)
+        args.db,
+        port=args.port,
+        flows=getattr(args, "flows", None),
+        allow_run=not getattr(args, "read_only", False) and not getattr(args, "ui", False),
+        offline=getattr(args, "offline", False),
+        schedules=getattr(args, "schedules", False),
     ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
@@ -229,29 +285,36 @@ def _serve_until_interrupted(server: DashboardServer) -> None:
         pass
 
 
-def _load(args: argparse.Namespace) -> tuple[DAG, str]:
-    """The DAG and flow name for a flow file, or for a bundled example (``miniflow example``)."""
-    if getattr(args, "example", False):
-        from miniflow.examples import load
-
-        return load(args.flow)[1], args.flow
-    return load_flow(args.flow)[1], Path(args.flow).stem
-
-
 def _execute(args: argparse.Namespace, resume: bool) -> int:
     if getattr(args, "offline", False):
-        os.environ["MINIFLOW_OFFLINE"] = "1"  # read by the examples; inherited by workers
-    dag, flow = _load(args)
+        os.environ["MINIFLOW_OFFLINE"] = "1"
+    flow, dag, spec = _load(args)
+    until = getattr(args, "until", None)
+    if spec is None and (until or getattr(args, "reuse", None)):
+        raise _UsageError("--until and --reuse apply to JSON flows")
+    if until:
+        if until not in dag:
+            raise _UsageError(f"no step {until!r} in {flow!r}")
+        selected = dag.ancestors(until) | {until}
+        dag = DAG.from_tasks(
+            (dag.tasks[n] for n in dag.topological_order() if n in selected),
+            about={**dag.about, "partial_target": until},
+        )
     server = _start_dashboard(args) if args.ui else None
     try:
-        return _execute_with(args, resume, dag, flow, server)
+        return _execute_with(args, resume, dag, flow, server, spec)
     finally:
         if server is not None:
             server.stop()
 
 
 def _execute_with(
-    args: argparse.Namespace, resume: bool, dag: DAG, flow: str, server: DashboardServer | None
+    args: argparse.Namespace,
+    resume: bool,
+    dag: DAG,
+    flow: str,
+    server: DashboardServer | None,
+    spec: Flow | None = None,
 ) -> int:
     with StateStore(args.db) as store:
         previous = None
@@ -260,6 +323,16 @@ def _execute_with(
             if previous is None:
                 print(f"error: no earlier run of {flow!r} in {args.db}", file=sys.stderr)
                 return 2
+        elif getattr(args, "reuse", None):
+            previous = args.reuse
+            if previous == "latest":
+                previous = store.latest_run(flow)
+            if previous is not None and previous not in {r.run_id for r in store.list_runs()}:
+                raise _UsageError(f"no earlier run {previous!r} in {args.db}")
+            if previous is not None:
+                earlier = next(r for r in store.list_runs() if r.run_id == previous)
+                if earlier.flow != flow:
+                    raise _UsageError(f"run {previous!r} belongs to {earlier.flow!r}, not {flow!r}")
         router = ExecutorRouter(io_workers=args.io_workers, cpu_workers=args.cpu_workers)
         reporter = _reporter(dag, args)
         scheduler = Scheduler(
@@ -269,6 +342,12 @@ def _execute_with(
             policy=RetryPolicy(base=args.retry_base, cap=args.retry_cap),
             flow=flow,
             listeners=[reporter] if reporter else [],
+            signatures={name: step_signature(step) for name, step in dag.tasks.items()}
+            if spec is not None
+            else None,
+            config_signatures={name: config_signature(step) for name, step in dag.tasks.items()}
+            if spec is not None
+            else None,
         )
         try:
             if reporter:
@@ -286,6 +365,8 @@ def _execute_with(
             print("note: timed-out tasks were abandoned while still running", file=sys.stderr)
     if not args.quiet:
         _summary(result)
+    if spec is not None and spec.on_failure is not None and result.status == "FAILED":
+        _run_on_failure(spec, result)
     if server is not None and args.ui_wait:
         _serve_until_interrupted(server)
     return {"SUCCESS": 0, "FAILED": 1}.get(result.status, 130)
@@ -352,11 +433,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_graph(args: argparse.Namespace) -> int:
-    _, dag = load_flow(args.flow)
+    name, dag, _ = _load(args)
     states: dict[str, str] | None = None
     if args.db and Path(args.db).exists():
         with StateStore(args.db) as store:
-            run_id = args.run or store.latest_run(Path(args.flow).stem)
+            run_id = args.run or store.latest_run(name)
             if run_id:
                 states = {k: v.value for k, v in store.get_states(run_id).items()}
     dot = dag.to_dot(states)
@@ -409,7 +490,11 @@ def _cmd_ui(args: argparse.Namespace) -> int:
             f"note: {args.db} doesn't exist yet; runs will appear once you start one",
             file=sys.stderr,
         )
-    server = _start_dashboard(args, allow_run=not args.read_only)
+    try:
+        server = _start_dashboard(args)
+    except NotADirectoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     try:
         _serve_until_interrupted(server)
     finally:
@@ -418,9 +503,58 @@ def _cmd_ui(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    _, dag = load_flow(args.flow)
+    _, dag, spec = _load(args)
     order = dag.topological_order()
-    print(f"OK: {len(dag)} tasks, order: {' -> '.join(order)}")
+    noun = "steps" if spec is not None else "tasks"
+    print(f"OK: {len(dag)} {noun}, order: {' -> '.join(order)}")
+    return 0
+
+
+def _cmd_test(args: argparse.Namespace) -> int:
+    path = Path(args.flow)
+    if path.suffix.lower() != ".json":
+        raise _UsageError("miniflow test needs a JSON flow file")
+    reports = run_flow_tests(path)
+    for report in reports:
+        print(f"{'PASS' if report['passed'] else 'FAIL'} {report['name']}")
+        for problem in report["problems"]:
+            print(f"  {problem}")
+    passed = sum(report["passed"] for report in reports)
+    print(f"{passed}/{len(reports)} flow tests passed")
+    return 0 if passed == len(reports) else 1
+
+
+def _default_text(value: Any) -> str:
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return repr(value)
+
+
+def _cmd_blocks(args: argparse.Namespace) -> int:
+    for folder in args.blocks or []:
+        load_plugins(folder)
+    if args.name:
+        spec = get_block(args.name)
+        print(f"{spec.name} ({spec.kind})\n  {spec.description}\n\nsettings:")
+        width = max((len(s.name) for s in spec.settings), default=4) + 2
+        for s in spec.settings:
+            need = "required" if s.required else f"default {_default_text(s.default)}"
+            extra = []
+            if s.choices:
+                extra.append("one of " + ", ".join(map(str, s.choices)))
+            if s.secret:
+                extra.append("secret: use {{ env.NAME }}")
+            if s.help:
+                extra.append(s.help)
+            print(f"  {s.name:<{width}}{type_name(s.type)}, {need}")
+            for line in extra:
+                print(f"  {'':<{width}}{line}")
+        return 0
+    blocks = all_blocks()
+    width = max(len(b.name) for b in blocks) + 2
+    for b in blocks:
+        print(f"{b.name:<{width}}{b.kind:<7}{b.description}")
     return 0
 
 
@@ -430,8 +564,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level", default="WARNING", help="Python logging level")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def flow_options(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--param",
+            action="append",
+            metavar="NAME=VALUE",
+            help="value for a JSON flow parameter (repeatable)",
+        )
+        p.add_argument("--environment", help="JSON flow environment: environments/NAME.json")
+        p.add_argument(
+            "--blocks", action="append", metavar="DIR", help="extra folder of plugin blocks"
+        )
+
     def run_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("flow", help="path to a flow file (for `example`: the example's name)")
+        p.add_argument("flow", help="flow file: Python (.py) or no-code JSON (.json)")
+        flow_options(p)
         p.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
         p.add_argument("--io-workers", type=int, default=8, help="thread pool size")
         p.add_argument(
@@ -468,6 +615,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="run a flow")
     run_options(r)
+    r.add_argument("--until", metavar="STEP", help="run this step and its dependencies only")
+    r.add_argument("--reuse", metavar="RUN_ID", help="reuse unchanged results (or 'latest')")
     r.set_defaults(func=_cmd_run)
 
     rs = sub.add_parser("resume", help="rerun a flow, reusing results that already succeeded")
@@ -483,7 +632,8 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=_cmd_status)
 
     g = sub.add_parser("graph", help="export the DAG in Graphviz DOT, coloured by the latest run")
-    g.add_argument("flow", help="path to a Python file defining tasks")
+    g.add_argument("flow", help="flow file: Python (.py) or no-code JSON (.json)")
+    flow_options(g)
     g.add_argument("-o", "--output", help="write to this file instead of stdout")
     g.add_argument("--db", default=DEFAULT_DB, help="colour nodes by states from this database")
     g.add_argument("--run", help="run id for colours (default: latest run of this flow)")
@@ -501,22 +651,43 @@ def build_parser() -> argparse.ArgumentParser:
     u = sub.add_parser("ui", help="serve the dashboard for a state database")
     u.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
     u.add_argument(
-        "--read-only", action="store_true", help="hide the Run buttons of the Examples gallery"
+        "--flows",
+        metavar="DIR",
+        help="let the dashboard run, cancel and resume the flow files in this folder",
     )
-    u.add_argument(
-        "--offline", action="store_true", help="examples started from the page use saved data"
-    )
+    u.add_argument("--read-only", action="store_true", help="hide the Examples gallery Run buttons")
+    u.add_argument("--offline", action="store_true", help="examples use saved data")
     dashboard_options(u)
     u.set_defaults(func=_cmd_ui)
 
+    sv = sub.add_parser("serve", help="run the dashboard and local JSON-flow schedules")
+    sv.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
+    sv.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    sv.add_argument("--offline", action="store_true", help="examples use saved data")
+    dashboard_options(sv)
+    sv.set_defaults(func=_cmd_ui, schedules=True, read_only=False)
+
     v = sub.add_parser("validate", help="check the DAG and print a topological order")
     v.add_argument("flow")
+    flow_options(v)
     v.set_defaults(func=_cmd_validate)
+
+    t = sub.add_parser("test", help="run sample-input checks declared in a JSON flow")
+    t.add_argument("flow", help="JSON flow file containing 'tests' cases")
+    t.set_defaults(func=_cmd_test)
+
+    b = sub.add_parser("blocks", help="list the blocks for JSON flows, or describe one")
+    b.add_argument("name", nargs="?", help="block to describe")
+    b.add_argument("--blocks", action="append", metavar="DIR", help="extra folder of plugin blocks")
+    b.set_defaults(func=_cmd_blocks)
     return parser
 
 
 def entry() -> None:
     """Console-script entry point (``miniflow`` / ``python -m miniflow``)."""
+    if sys.platform == "win32":
+        # The dashboard cancels a run with Ctrl+Break (miniflow.ui.control); treat it as Ctrl+C.
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
     code = main()
     if _abandoned_work:
         sys.stdout.flush()
@@ -531,6 +702,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     func: Callable[[argparse.Namespace], int] = args.func
     try:
         return int(func(args))
-    except GraphError as exc:
+    except (GraphError, FlowFileError, BlockError, _UsageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

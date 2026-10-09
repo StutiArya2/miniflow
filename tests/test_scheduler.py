@@ -400,3 +400,22 @@ def test_many_cpu_tasks_from_one_plain_function(router):
     result = run(tasks, router=router)
     assert result.ok
     assert result["total"] == sum(i**3 for i in range(6))
+
+
+def test_waits_have_a_limit_where_signals_cant_interrupt_them(monkeypatch):
+    """On Windows a blocked wait ignores Ctrl+C, so the loop must wake up regularly."""
+    import miniflow.scheduler as scheduler_module
+
+    seen: list[float | None] = []
+    real_wait = scheduler_module.wait
+
+    def spy(fs, timeout=None, return_when=None):
+        seen.append(timeout)
+        return real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(scheduler_module, "wait", spy)
+    monkeypatch.setattr(scheduler_module, "_WAKE_LIMIT", 0.05)
+    result = Scheduler(DAG.from_tasks([task(F.sleep_then, name="s", args=(0.3, 1))])).run()
+    assert result.status == "SUCCESS"
+    assert seen
+    assert all(t is not None and t <= 0.05 for t in seen), seen

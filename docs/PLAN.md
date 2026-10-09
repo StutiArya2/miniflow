@@ -121,24 +121,39 @@ The spec only has a CLI and a Graphviz export. A live web dashboard makes the pr
 - Speedup is Σ attempt time ÷ wall time, so runs that mostly wait on retry backoff can show less than ×1. That is correct, and worth explaining in the viva.
 - Checked in the browser in light and dark mode and at phone width (375 px, no horizontal page scroll).
 
-### Phase 3.6: real-world examples in the dashboard
-Added so that people with no background in workflow engines understand what MiniFlow does.
+### Phase 3.6: dashboard controls (`miniflow ui --flows DIR`)
+So the whole viva demo (fail, cancel, resume) can be driven from the browser instead of a terminal.
 
-**Status: ✅ done.**
-- Four pipelines in `miniflow/examples/`, each a recognisable job using live public data: an earthquake monitor (USGS), an air-quality advisor for 8 Indian cities (Open-Meteo), a morning news digest (Hacker News), and an online shop's sales report (ECB exchange rates, sample orders). Commands: `miniflow examples` and `miniflow example <name> [--ui] [--offline] [--resume]`.
-- Offline mode replays gzip snapshots of a real run (226 KB), including its failures, so viva demos work without internet. `MINIFLOW_RECORD_SNAPSHOTS=1` refreshes them.
-- Library additions:
-  - `Task.description`, taken from the docstring.
-  - Flow `about` (title, story, `WATCH`, `HIGHLIGHTS`).
-  - Result previews: a task can return `{"summary": ...}`, stored in a new `task_states.preview` column, migrated automatically.
-  - `@task(optional=True)`: a failure doesn't skip downstream steps; they receive `None`.
-  - Typed `@task` overloads, so strict mypy sees a decorated function as a `Task`.
-- Dashboard:
-  - An Examples gallery with Run buttons. Only bundled examples, one at a time, same-origin checks, `--read-only` to hide them.
-  - A story panel with "How to read this page".
-  - "What this run found", showing the highlight steps' results.
-  - Step descriptions and results; the failure reason in one line, with the traceback folded.
-  - A hover explanation on the speedup card.
+- `miniflow/ui/control.py`: `RunController` lists `DIR/*.py` (skipping `_*.py`) and launches each run as its own `python -m miniflow run|resume <file> --db <db> --quiet` process, with `MINIFLOW_FAIL_RATE` from the page. Using a separate process keeps `scheduler.py` unchanged, gives every run a fresh import (so module-level flow settings behave as in a terminal), and a crashing flow can't take the dashboard down.
+- One run at a time. Cancel sends the process group SIGINT (Ctrl+Break on Windows, which `cli.entry` turns into `KeyboardInterrupt`), so the scheduler's own interrupt path marks the run INTERRUPTED. After 5 s the group is killed and the controller marks the run INTERRUPTED itself; it does the same, and reports an error, when a run's process dies mid-run.
+- `ui/server.py`: `GET /api/control` and `POST /api/control/{run,resume,cancel}` exist only with `--flows`. A POST is refused unless its `Host` and `Origin` are the dashboard and its body is JSON (≤ 4 KB), so other web pages can't start runs.
+
+**Status: ✅ done.** Notes from building it:
+- Checked in the browser: run at 100% fault rate, cancel mid-run (INTERRUPTED), resume at 0% (SUCCESS, finished tasks reused), a refused request's error in the strip, and the unchanged read-only page without `--flows`.
+- `/api/runs` replies can arrive out of order, so a reply sent before a run existed briefly showed "No runs yet" during the run. The page now ignores replies to all but its newest request.
+- Resume is a fixed button in the control strip, not part of the run header, which is redrawn every 0.5 s during a run and every 3 s otherwise; a redrawn button can lose a click.
+- Known and unchanged: after an interrupt the tasks that were running keep the RUNNING state (the scheduler's interrupt path doesn't update them), so the graph still shows them as running. Resume reruns them as usual.
+
+### V1 milestone 1: no-code engine (JSON flows and blocks)
+Roadmap and research: `docs/superpowers/specs/2026-10-08-v1-roadmap.md`; design:
+`docs/superpowers/specs/2026-10-08-v1-m1-engine-design.md`.
+
+**Status: ✅ done.** JSON flows compile to ordinary tasks, so `scheduler.py`, `store.py`,
+`executors.py` and `graph.py` are unchanged. Notes:
+- Each step's task function is `miniflow.blocks.runtime.run_step` (or `run_step_async`), and the step's configuration travels in the task's kwargs as plain data, so cpu steps run in worker processes; plugin blocks are re-imported there from their module reference.
+- The loader reports every problem at once, with "Did you mean" suggestions; secrets must come from `{{ env.NAME }}` and are masked as `••••` in errors.
+- `filter` conditions are parsed with `ast` and evaluated by walking the tree (no `eval`), with a whitelist of operators and functions.
+- `on_failure` runs in the CLI after a FAILED run (so also for dashboard runs), not as a DAG step.
+
+### V2: Editor 2.0
+Design: `docs/superpowers/specs/2026-10-09-v2-editor-design.md`.
+
+**Status: ✅ done.** Undo/redo and copy/paste, zoom/pan/fit and Tidy up, version history with
+diff and restore, run data on the canvas. Notes:
+- Undo is snapshot-based: every editor change calls `studioCommit()`, which records the flow as JSON text (100 steps). Dragging records once on release; settings record once when the field loses focus.
+- The browser code is split into `editor-history.js`, `editor-view.js`, `editor-versions.js` and `editor-data.js` next to `editor.js`, plain scripts with no build step. Global names must not clash with `app.js` (an early `NODE_W` clash made the browser drop a whole file).
+- History lives in `.history/<flow>/<id>.json` (gitignored). A save message belongs to the version it was saved with: `current.meta` holds it until the version is replaced.
+- "Changed since this run" uses a new settings-only `config_signature` recorded with each run (an optional scheduler/store parameter like V1's `signatures`). The strict `step_signature` includes file contents, so a step writing its own output file always looked changed.
 
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.

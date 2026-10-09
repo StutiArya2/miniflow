@@ -15,6 +15,7 @@ plugins:
 nav:
   - Home: index.md
   - Plan: PLAN.md
+  - Demo script: demo.md
   - Evaluation:
       - Findings: evaluation.md
       - Results: results/results.md
@@ -26,3 +27,5 @@ nav:
       - Store: api/store.md
       - Scheduler: api/scheduler.md
       - Dashboard: api/ui.md
+      - Flow files: api/flowfile.md
+      - Blocks: api/blocks.md

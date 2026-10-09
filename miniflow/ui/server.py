@@ -1,20 +1,29 @@
-"""Read-only dashboard server (standard library only).
+"""Dashboard server (standard library only).
 
-Endpoints (all ``GET``):
+Endpoints:
 
-``/``                          the single-page dashboard
-``/static/<file>``             its CSS and JavaScript (package data)
-``/api/examples``              the bundled example pipelines (Examples gallery)
-``/api/runs``                  recent runs with a count of tasks per state
-``/api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
-``/api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /``                          the single-page dashboard
+``GET /static/<file>``             its CSS and JavaScript (package data)
+``GET /api/runs``                  recent runs with a count of tasks per state
+``GET /api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
+``GET /api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /api/control``               flows the dashboard can start and the active run
+``POST /api/control/run``          ``{"flow": name, "fail_rate": 0..1}``: start a run
+``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
+``POST /api/control/partial``      ``{"flow": name, "step": name}``: run through one step
+``POST /api/control/cancel``       ``{}``: stop the active run
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
 scheduler writes. It works while a run is in progress (in the same process
 with ``miniflow run --ui`` or in another one with ``miniflow ui``) and after it.
-It binds to ``127.0.0.1``. Its only write action is ``POST /api/examples/<name>/run``,
-which starts a *bundled* example when the server was created with ``allow_run=True``;
-requests from other websites are refused (Host, Origin and a custom header are checked).
+It binds to ``127.0.0.1``. It is read-only unless it is given a ``flows`` folder
+(``miniflow ui --flows DIR``); only then do the ``/api/control`` endpoints exist,
+backed by a :class:`~miniflow.ui.control.RunController`.
+
+A control request is refused unless its ``Host`` is this server, its ``Origin``
+(if sent) is this server, and its body is JSON of at most 4 KB. Browsers don't
+send JSON to another site without asking the server first, and this server never
+agrees, so other web pages can't start runs.
 """
 
 from __future__ import annotations
@@ -32,9 +41,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from miniflow.flowfile import FlowFileError
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
+from miniflow.ui.author import FlowWorkspace, WorkspaceError
+from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
+from miniflow.ui.schedules import ScheduleService
 
 __all__ = ["DashboardServer"]
 
@@ -43,11 +56,19 @@ log = logging.getLogger("miniflow.ui")
 _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "editor.js": "text/javascript; charset=utf-8",
+    "editor-history.js": "text/javascript; charset=utf-8",
+    "editor-view.js": "text/javascript; charset=utf-8",
+    "editor-versions.js": "text/javascript; charset=utf-8",
+    "editor-data.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _POLL_SECONDS = 0.25
 _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
+_MAX_BODY = 4096
+_MAX_FLOW_BODY = 262144
+_ACTIONS = ("run", "resume", "partial", "cancel")
 
 
 def _static(name: str) -> bytes:
@@ -154,6 +175,38 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
+            elif parts == ["api", "blocks"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.catalog())
+            elif parts == ["api", "environments"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.environments())
+            elif parts == ["api", "subflows"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.subflows())
+            elif parts == ["api", "templates"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.templates())
+            elif parts == ["api", "flows"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.list())
+            elif (
+                len(parts) in (4, 5, 6)
+                and parts[:2] == ["api", "flows"]
+                and parts[3] == "versions"
+                and parts[5:] in ([], ["diff"])
+                and self.server.workspace is not None
+            ):
+                self._versions(parts[2], parts[4] if len(parts) > 4 else None, len(parts) == 6)
+            elif (
+                len(parts) == 3
+                and parts[:2] == ["api", "flows"]
+                and self.server.workspace is not None
+            ):
+                try:
+                    self._send_json(self.server.workspace.read(parts[2]))
+                except (FileNotFoundError, WorkspaceError):
+                    self._send_error(HTTPStatus.NOT_FOUND, "flow not found")
+                except json.JSONDecodeError as exc:
+                    self._send_error(
+                        HTTPStatus.BAD_REQUEST,
+                        f"flow JSON is invalid at line {exc.lineno}, column {exc.colno}",
+                    )
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -165,50 +218,179 @@ class _Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "events":
                 since = float(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 self._stream(parts[2], since)
+            elif parts == ["api", "control"] and self.server.controller is not None:
+                self._send_json(self.server.controller.status())
+            elif parts == ["api", "schedules"]:
+                if self.server.schedule_service is None:
+                    self._send_json({"schedules": [], "problems": {}, "events": []})
+                else:
+                    self._send_json(self.server.schedule_service.snapshot())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # the browser went away
 
     def do_POST(self) -> None:
-        """``POST /api/examples/<name>/run``: start a bundled example (the only write action)."""
-        length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(min(length, 65536))
+        self.close_connection = True  # a refused request's body is never read
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
+        controller = self.server.controller
         try:
-            if len(parts) != 4 or parts[:2] != ["api", "examples"] or parts[3] != "run":
+            if parts == ["api", "flows", "template"] and self.server.workspace is not None:
+                body = self._control_body()
+                name = _text(body, "name")
+                document = self.server.workspace.create_template(_text(body, "template"), name)
+                if controller is not None:
+                    controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
+                self._send_json(document, HTTPStatus.CREATED)
+                return
+            if parts == ["api", "layout"] and self.server.workspace is not None:
+                graph = self._control_body(_MAX_FLOW_BODY).get("graph")
+                tasks = graph.get("tasks") if isinstance(graph, dict) else None
+                if not isinstance(tasks, dict) or not all(
+                    isinstance(t, dict) for t in tasks.values()
+                ):
+                    raise ControlError(
+                        'graph should be {"tasks": {name: {"after": [...]}}}',
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                self._send_json(layered_layout({"tasks": tasks}))
+                return
+            if parts == ["api", "flows", "restore"] and self.server.workspace is not None:
+                body = self._control_body()
+                try:
+                    result = self.server.workspace.restore(
+                        _text(body, "name"), _text(body, "version")
+                    )
+                except (FileNotFoundError, WorkspaceError):
+                    raise ControlError("no such version", HTTPStatus.NOT_FOUND) from None
+                self._send_json(
+                    result, HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST
+                )
+                return
+            if (
+                len(parts) == 3
+                and parts[:2] == ["api", "flows"]
+                and parts[2] in ("validate", "save", "test")
+                and self.server.workspace is not None
+            ):
+                body = self._control_body(_MAX_FLOW_BODY)
+                name = _text(body, "name")
+                if "flow" not in body:
+                    raise ControlError("flow is required", HTTPStatus.BAD_REQUEST)
+                if parts[2] == "test":
+                    self._send_json(self.server.workspace.test(name, body["flow"]))
+                    return
+                if parts[2] == "save":
+                    message = body.get("message", "")
+                    result = self.server.workspace.save(
+                        name, body["flow"], message=message if isinstance(message, str) else ""
+                    )
+                    if result["valid"] and controller is not None:
+                        controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
+                else:
+                    result = self.server.workspace.validate(name, body["flow"])
+                self._send_json(
+                    result, HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST
+                )
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "examples"] and parts[3] == "run":
+                if not self.server.allow_run:
+                    self._send_error(HTTPStatus.FORBIDDEN, "this dashboard is read-only")
+                elif not self._same_origin():
+                    self._send_error(
+                        HTTPStatus.FORBIDDEN, "requests must come from the dashboard page"
+                    )
+                elif parts[2] not in self.server.example_names:
+                    self._send_error(HTTPStatus.NOT_FOUND, f"no example {parts[2]!r}")
+                elif not self.server.runner.start(parts[2]):
+                    self._send_error(HTTPStatus.CONFLICT, "an example is still running")
+                else:
+                    self._send_json({"started": parts[2]}, HTTPStatus.ACCEPTED)
+                return
+            if (
+                controller is None
+                or len(parts) != 3
+                or parts[:2] != ["api", "control"]
+                or parts[2] not in _ACTIONS
+            ):
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
-            elif not self.server.allow_run:
-                self._send_error(HTTPStatus.FORBIDDEN, "this dashboard is read-only")
-            elif not self._same_origin():
-                self._send_error(HTTPStatus.FORBIDDEN, "requests must come from the dashboard page")
-            elif parts[2] not in self.server.example_names:
-                self._send_error(HTTPStatus.NOT_FOUND, f"no example {parts[2]!r}")
-            elif not self.server.runner.start(parts[2]):
-                running = self.server.runner.current
-                self._send_error(HTTPStatus.CONFLICT, f"{running} is still running")
+                return
+            body = self._control_body()
+            if parts[2] == "run":
+                active = controller.start(
+                    _text(body, "flow"), body.get("fail_rate"), body.get("environment")
+                )
+                self._send_json(active, HTTPStatus.ACCEPTED)
+            elif parts[2] == "resume":
+                active = controller.resume(_text(body, "run_id"), body.get("fail_rate"))
+                self._send_json(active, HTTPStatus.ACCEPTED)
+            elif parts[2] == "partial":
+                active = controller.partial(
+                    _text(body, "flow"), _text(body, "step"), body.get("environment")
+                )
+                self._send_json(active, HTTPStatus.ACCEPTED)
             else:
-                self._send_json({"started": parts[2]}, HTTPStatus.ACCEPTED)
+                controller.cancel()
+                self._send_json(controller.status())
+        except ControlError as exc:
+            self._send_error(exc.status, str(exc))
+        except WorkspaceError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        except FlowFileError as exc:
+            self._send_json({"problems": exc.problems}, HTTPStatus.BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def _same_origin(self) -> bool:
-        """Only the dashboard's own page may start runs.
-
-        Blocks other websites from triggering runs (CSRF and DNS rebinding).
-        """
-        port = self.server.server_address[1]
-        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        if self.headers.get("Host") not in allowed:
-            return False
+        hosts = self.server.hosts
         origin = self.headers.get("Origin")
-        if origin is not None and origin not in {f"http://{h}" for h in allowed}:
-            return False
-        # A custom header forces a CORS preflight, which this server never approves.
-        return self.headers.get("X-MiniFlow-Action") == "run"
+        return (
+            self.headers.get("Host", "").lower() in hosts
+            and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
+            and self.headers.get("X-MiniFlow-Action") == "run"
+        )
+
+    def _control_body(self, limit: int = _MAX_BODY) -> dict[str, Any]:
+        """Refuse requests that didn't come from the dashboard page, then parse the body."""
+        hosts = self.server.hosts
+        if self.headers.get("Host", "").lower() not in hosts:
+            raise ControlError("unexpected Host header", HTTPStatus.FORBIDDEN)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {f"http://{h}" for h in hosts}:
+            raise ControlError("requests from other sites are not allowed", HTTPStatus.FORBIDDEN)
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            raise ControlError("the body must be JSON", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            raise ControlError("Content-Length is required", HTTPStatus.LENGTH_REQUIRED) from None
+        if not 0 <= length <= limit:
+            raise ControlError(
+                f"the body is over {limit} bytes", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            )
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            raise ControlError("the body is not valid JSON", HTTPStatus.BAD_REQUEST) from None
+        if not isinstance(body, dict):
+            raise ControlError("the body must be a JSON object", HTTPStatus.BAD_REQUEST)
+        return body
 
     # --------------------------------------------------------------- replies
+    def _versions(self, name: str, vid: str | None, diff: bool) -> None:
+        workspace = self.server.workspace
+        assert workspace is not None
+        try:
+            if vid is None:
+                self._send_json(workspace.versions(name))
+            elif diff:
+                self._send_json(workspace.diff(name, vid))
+            else:
+                self._send_json(workspace.version(name, vid))
+        except (FileNotFoundError, WorkspaceError):
+            self._send_error(HTTPStatus.NOT_FOUND, "no such flow or version")
+
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -272,15 +454,20 @@ class _Handler(BaseHTTPRequestHandler):
         self._last_write = time.monotonic()
 
 
+def _text(body: dict[str, Any], key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str):
+        raise ControlError(f"{key} must be a string", HTTPStatus.BAD_REQUEST)
+    return value
+
+
 class DashboardServer(ThreadingHTTPServer):
     """``DashboardServer(db_path, port=8765).start()`` serves in a background thread.
 
     If ``port`` is taken, the next free port (up to ``port + 20``) is used; pass
     ``port=0`` for any free port. :attr:`url` gives the address actually bound.
-
-    ``allow_run=True`` enables the Examples gallery's Run buttons: the page may then
-    start the *bundled* example pipelines (never arbitrary code), one at a time.
-    ``offline=True`` makes those runs use the saved real-data snapshots.
+    With ``flows=DIR`` the dashboard can also start, cancel and resume runs of the
+    flow files in ``DIR``; :meth:`stop` then cancels the run it started, if any.
     """
 
     daemon_threads = True
@@ -291,9 +478,11 @@ class DashboardServer(ThreadingHTTPServer):
         db: str | Path,
         port: int = 8765,
         host: str = "127.0.0.1",
+        flows: str | Path | None = None,
         *,
         allow_run: bool = False,
         offline: bool = False,
+        schedules: bool = False,
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
@@ -306,6 +495,17 @@ class DashboardServer(ThreadingHTTPServer):
         self.example_names = {ex["name"] for ex in self.catalog}
         self.store = StateStore(db)
         self.api = _Api(self.store)
+        try:
+            self.workspace = None if flows is None else FlowWorkspace(flows)
+            self.controller = None if flows is None else RunController(flows, self.store)
+            self.schedule_service = (
+                ScheduleService(self.controller, self.store)
+                if schedules and self.controller is not None
+                else None
+            )
+        except OSError:
+            self.store.close()
+            raise
         self.stopping = threading.Event()
         self._thread: threading.Thread | None = None
         last_error: OSError | None = None
@@ -332,6 +532,12 @@ class DashboardServer(ThreadingHTTPServer):
         host, port = self.server_address[:2]
         return f"http://{host!s}:{port}"
 
+    @property
+    def hosts(self) -> set[str]:
+        """``Host`` header values that address this server."""
+        host, port = self.server_address[:2]
+        return {f"{host!s}:{port}", f"localhost:{port}"}
+
     def start(self) -> DashboardServer:
         self._thread = threading.Thread(
             target=self.serve_forever,
@@ -340,9 +546,15 @@ class DashboardServer(ThreadingHTTPServer):
             name="miniflow-ui",
         )
         self._thread.start()
+        if self.schedule_service is not None:
+            self.schedule_service.start()
         return self
 
     def stop(self) -> None:
+        if self.schedule_service is not None:
+            self.schedule_service.stop()
+        if self.controller is not None:
+            self.controller.shutdown()
         self.stopping.set()
         if self._thread is not None:
             self.shutdown()

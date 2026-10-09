@@ -54,14 +54,15 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from miniflow.preview import inspect_value
 from miniflow.states import TERMINAL, State
 
 if TYPE_CHECKING:
     from miniflow.graph import DAG
 
-__all__ = ["AttemptRecord", "RunRecord", "StateStore", "TaskRecord"]
+__all__ = ["AttemptRecord", "RunRecord", "ScheduleEvent", "StateStore", "TaskRecord"]
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -81,6 +82,8 @@ CREATE TABLE IF NOT EXISTS task_states (
     error       TEXT,
     from_cache  INTEGER NOT NULL DEFAULT 0,
     preview     TEXT,
+    sample      TEXT,
+    item_count  INTEGER,
     started_at  REAL,
     finished_at REAL,
     updated_at  REAL NOT NULL,
@@ -97,6 +100,15 @@ CREATE TABLE IF NOT EXISTS attempts (
     started_at  REAL,
     finished_at REAL,
     PRIMARY KEY (run_id, task, attempt)
+);
+CREATE TABLE IF NOT EXISTS schedule_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow        TEXT NOT NULL,
+    schedule    TEXT NOT NULL,
+    due_at      REAL NOT NULL,
+    recorded_at REAL NOT NULL,
+    status      TEXT NOT NULL,
+    message     TEXT
 );
 """
 
@@ -127,6 +139,8 @@ class TaskRecord:
     updated_at: float
     has_result: bool
     preview: str | None = None
+    sample: Any = None
+    item_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +155,19 @@ class AttemptRecord:
     worker: str | None
     started_at: float | None
     finished_at: float | None
+
+
+@dataclass(frozen=True)
+class ScheduleEvent:
+    """One scheduled launch or a missed/failed launch."""
+
+    id: int
+    flow: str
+    schedule: str
+    due_at: float
+    recorded_at: float
+    status: str
+    message: str | None
 
 
 class StateStore:
@@ -161,6 +188,10 @@ class StateStore:
             columns = {r[1] for r in self._conn.execute("PRAGMA table_info(task_states)")}
             if "preview" not in columns:  # databases written before result previews existed
                 self._conn.execute("ALTER TABLE task_states ADD COLUMN preview TEXT")
+            if "sample" not in columns:
+                self._conn.execute("ALTER TABLE task_states ADD COLUMN sample TEXT")
+            if "item_count" not in columns:
+                self._conn.execute("ALTER TABLE task_states ADD COLUMN item_count INTEGER")
             self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._conn.commit()
 
@@ -187,7 +218,14 @@ class StateStore:
         return ts
 
     # ------------------------------------------------------------------ writes
-    def create_run(self, flow: str, dag: DAG) -> str:
+    def create_run(
+        self,
+        flow: str,
+        dag: DAG,
+        *,
+        signatures: dict[str, str | None] | None = None,
+        config_signatures: dict[str, str] | None = None,
+    ) -> str:
         """Start a new run: every task PENDING and the graph saved as JSON."""
         run_id = uuid.uuid4().hex[:12]
         order = dag.topological_order()
@@ -198,6 +236,12 @@ class StateStore:
                     "after": list(dag.upstream[name]),
                     "description": dag.tasks[name].description,
                     "optional": dag.tasks[name].optional,
+                    **({"signature": signatures.get(name)} if signatures is not None else {}),
+                    **(
+                        {"config_signature": config_signatures.get(name)}
+                        if config_signatures is not None
+                        else {}
+                    ),
                 }
                 for name in order
             },
@@ -283,12 +327,25 @@ class StateStore:
     ) -> None:
         """Pickle ``value`` and mark the task SUCCESS."""
         blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        sample, item_count = inspect_value(value)
         with self._lock, self._conn:
             now = self._now()
             cur = self._conn.execute(
                 "UPDATE task_states SET state = ?, result = ?, error = NULL, from_cache = ?,"
-                " preview = ?, finished_at = ?, updated_at = ? WHERE run_id = ? AND task = ?",
-                (State.SUCCESS.value, blob, int(from_cache), preview, now, now, run_id, task),
+                " preview = ?, sample = ?, item_count = ?, finished_at = ?, updated_at = ?"
+                " WHERE run_id = ? AND task = ?",
+                (
+                    State.SUCCESS.value,
+                    blob,
+                    int(from_cache),
+                    preview,
+                    json.dumps(sample),
+                    item_count,
+                    now,
+                    now,
+                    run_id,
+                    task,
+                ),
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no task {task!r} in run {run_id!r}")
@@ -312,6 +369,24 @@ class StateStore:
             if cur.rowcount == 0:
                 raise KeyError(f"no run {run_id!r}")
 
+    def record_schedule_event(
+        self, flow: str, schedule: str, due_at: float, status: str, message: str | None = None
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO schedule_events (flow, schedule, due_at, recorded_at, status, message)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (flow, schedule, due_at, self._now(), status, message),
+            )
+
+    def list_schedule_events(self, limit: int = 50) -> list[ScheduleEvent]:
+        rows = self._query(
+            "SELECT id, flow, schedule, due_at, recorded_at, status, message"
+            " FROM schedule_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [ScheduleEvent(*row) for row in rows]
+
     # ------------------------------------------------------------------- reads
     def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         with self._lock:
@@ -328,7 +403,7 @@ class StateStore:
         """Task rows of ``run_id`` with ``updated_at > ts``, oldest change first."""
         rows = self._query(
             "SELECT run_id, task, state, attempts, error, from_cache, started_at, finished_at,"
-            " updated_at, result IS NOT NULL, preview FROM task_states"
+            " updated_at, result IS NOT NULL, preview, sample, item_count FROM task_states"
             " WHERE run_id = ? AND updated_at > ? ORDER BY updated_at, task",
             (run_id, ts),
         )
@@ -345,6 +420,8 @@ class StateStore:
                 updated_at=r[8],
                 has_result=bool(r[9]),
                 preview=r[10],
+                sample=json.loads(r[11]) if r[11] is not None else None,
+                item_count=r[12],
             )
             for r in rows
         ]

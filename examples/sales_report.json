@@ -1,0 +1,77 @@
+{
+  "description": "Revenue per region from orders of at least a minimum value, saved as CSV and SQLite",
+  "params": {
+    "min_amount": {"type": "float", "default": 20000, "help": "Smallest order (in INR) to include"}
+  },
+  "steps": {
+    "sales": {
+      "block": "read_csv",
+      "settings": {"path": "data/sales.csv"},
+      "note": "40 orders in INR, USD and EUR"
+    },
+    "in_inr": {
+      "block": "convert_currency",
+      "settings": {"rows": "{{ sales }}"},
+      "note": "Plugin block from examples/blocks/currency.py"
+    },
+    "big_orders": {
+      "block": "filter",
+      "settings": {"rows": "{{ in_inr }}", "where": "amount_inr >= {{ params.min_amount }}"}
+    },
+    "by_region": {
+      "block": "aggregate",
+      "settings": {
+        "rows": "{{ big_orders }}",
+        "group_by": "region",
+        "metrics": {"orders": "count", "revenue_inr": "sum(amount_inr)", "average_inr": "avg(amount_inr)"}
+      }
+    },
+    "ranked": {
+      "block": "sort",
+      "settings": {"rows": "{{ by_region }}", "by": "revenue_inr", "descending": true}
+    },
+    "save_csv": {
+      "block": "write_csv",
+      "settings": {"rows": "{{ ranked }}", "path": "out/revenue_by_region.csv"}
+    },
+    "create_table": {
+      "block": "sql",
+      "settings": {
+        "database": "out/sales.db",
+        "query": "CREATE TABLE IF NOT EXISTS big_orders (order_id INTEGER PRIMARY KEY, region TEXT, product TEXT, amount_inr REAL)"
+      }
+    },
+    "save_table": {
+      "block": "sql",
+      "after": ["create_table"],
+      "settings": {
+        "database": "out/sales.db",
+        "query": "INSERT OR REPLACE INTO big_orders VALUES (:order_id, :region, :product, :amount_inr)",
+        "many": "{{ big_orders }}"
+      }
+    },
+    "summary": {
+      "block": "log",
+      "after": ["save_csv", "save_table"],
+      "settings": {
+        "message": "{{ big_orders.count }} orders of at least {{ params.min_amount }} INR; top region {{ ranked.first.region }} with {{ ranked.first.revenue_inr }} INR"
+      }
+    }
+  },
+  "on_failure": {
+    "block": "log",
+    "settings": {"message": "sales_report failed at {{ failure.step }}: {{ failure.error }}", "level": "error"}
+  },
+  "tests": [
+    {
+      "name": "only large orders remain",
+      "inputs": {"in_inr": [
+        {"order_id": 1, "region": "North", "product": "A", "amount_inr": 30000},
+        {"order_id": 2, "region": "South", "product": "B", "amount_inr": 5000}
+      ]},
+      "expect": {"big_orders": [
+        {"order_id": 1, "region": "North", "product": "A", "amount_inr": 30000}
+      ]}
+    }
+  ]
+}

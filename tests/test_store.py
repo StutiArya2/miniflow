@@ -156,6 +156,10 @@ def test_save_and_load_completed_round_trip(store: StateStore, dag: DAG) -> None
     assert recs["a"].has_result
     assert not recs["a"].from_cache
     assert recs["a"].finished_at is not None
+    assert recs["a"].item_count == 3
+    assert recs["a"].sample["rows"] == [1, 2, 3]
+    assert recs["b"].sample is None
+    assert recs["b"].item_count is None
     assert not recs["c"].has_result
 
     store.save_result(run_id, "c", 42, from_cache=True)

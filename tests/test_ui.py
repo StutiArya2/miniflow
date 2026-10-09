@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from textwrap import dedent
 from urllib.parse import urlsplit
 
 import pytest
@@ -252,72 +253,207 @@ def test_ui_command(tmp_path, capsys, monkeypatch):
     assert "dashboard: http://127.0.0.1:" in err
 
 
-# ------------------------------------------------------------ examples gallery
-def post(server: DashboardServer, path: str, headers: dict[str, str] | None = None):
+# ----------------------------------------------------------------- control
+CONTROL_FLOWS = {
+    "hello": """
+        import os
+
+        @task
+        def rate():
+            return os.environ.get("MINIFLOW_FAIL_RATE")
+        """,
+    "sleepy": """
+        import os, time
+
+        @task
+        def fast():
+            return 21
+
+        @task(after=[fast])
+        def slow(x):
+            if os.environ.get("MINIFLOW_FAIL_RATE") != "0":
+                time.sleep(60)
+            return x * 2
+        """,
+}
+
+
+def call(
+    server: DashboardServer,
+    method: str,
+    path: str,
+    body: object = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, object]:
     url = urlsplit(server.url)
-    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=30)
+    data = body if isinstance(body, bytes) else json.dumps(body).encode()
     try:
-        conn.request("POST", path, body=b"", headers=headers or {})
+        conn.request(
+            method, path, body=data, headers={"Content-Type": "application/json", **(headers or {})}
+        )
         res = conn.getresponse()
-        return res.status, json.loads(res.read() or b"{}")
+        return res.status, json.loads(res.read() or b"null")
     finally:
         conn.close()
 
 
-RUN = {"X-MiniFlow-Action": "run"}
+def wait_until(cond, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
 
 
-def test_examples_endpoint_lists_bundled_pipelines(tmp_path):
-    with DashboardServer(tmp_path / "s.db", port=0) as server:
-        status, _, body = get(server, "/api/examples")
-    data = json.loads(body)
+@pytest.fixture
+def flows_dir(tmp_path):
+    d = tmp_path / "flows"
+    d.mkdir()
+    for name, body in CONTROL_FLOWS.items():
+        (d / f"{name}.py").write_text("from miniflow import task\n" + dedent(body), "utf-8")
+    return d
+
+
+@pytest.fixture
+def control_server(tmp_path, flows_dir):
+    with DashboardServer(tmp_path / "c.db", port=0, flows=flows_dir) as s:
+        yield s
+
+
+def idle(server: DashboardServer) -> bool:
+    return call(server, "GET", "/api/control")[1]["active"] is None
+
+
+def slow_is_running(server: DashboardServer) -> bool:
+    run_id = server.store.latest_run("sleepy")
+    return run_id is not None and server.store.get_states(run_id).get("slow") is State.RUNNING
+
+
+def run_status(server: DashboardServer, run_id: str) -> str:
+    return next(r.status for r in server.store.list_runs() if r.run_id == run_id)
+
+
+def test_controls_are_off_without_flows(server):
+    assert call(server, "GET", "/api/control")[0] == 404
+    assert call(server, "POST", "/api/control/run", {"flow": "x", "fail_rate": 0})[0] == 404
+    assert call(server, "POST", "/api/runs", {})[0] == 404
+
+
+def test_control_status_lists_flows(control_server):
+    assert call(control_server, "GET", "/api/control") == (
+        200,
+        {"flows": ["hello", "sleepy"], "active": None, "error": None},
+    )
+
+
+def test_run_button_starts_the_flow(control_server):
+    status, body = call(
+        control_server, "POST", "/api/control/run", {"flow": "hello", "fail_rate": 0.5}
+    )
+    assert status == 202
+    assert body == {"action": "run", "flow": "hello", "run_id": None}
+    wait_until(lambda: idle(control_server))
+    run_id = control_server.store.latest_run("hello")
+    assert run_id is not None
+    assert run_status(control_server, run_id) == "SUCCESS"
+    assert control_server.store.load_completed(run_id) == {"rate": "0.5"}
+
+
+def test_cancel_then_resume(control_server):
+    run = {"flow": "sleepy", "fail_rate": 0.4}
+    assert call(control_server, "POST", "/api/control/run", run)[0] == 202
+    wait_until(lambda: slow_is_running(control_server))
+    first = control_server.store.latest_run("sleepy")
+
+    status, body = call(control_server, "POST", "/api/control/cancel", {})
     assert status == 200
-    assert data["allowRun"] is False
-    assert {e["name"] for e in data["examples"]} == {
-        "earthquakes",
-        "air_quality",
-        "news_digest",
-        "shop_report",
-    }
+    assert body["active"] is None
+    assert run_status(control_server, first) == "INTERRUPTED"
+
+    status, body = call(
+        control_server, "POST", "/api/control/resume", {"run_id": first, "fail_rate": 0}
+    )
+    assert status == 202
+    assert body["action"] == "resume"
+    wait_until(lambda: idle(control_server))
+    second = control_server.store.latest_run("sleepy")
+    assert second != first
+    assert run_status(control_server, second) == "SUCCESS"
 
 
-def test_read_only_dashboard_refuses_runs(tmp_path):
-    with DashboardServer(tmp_path / "s.db", port=0) as server:
-        assert post(server, "/api/examples/earthquakes/run", RUN)[0] == 403
+def test_cancel_with_nothing_running_is_409(control_server):
+    status, body = call(control_server, "POST", "/api/control/cancel", {})
+    assert status == 409
+    assert "error" in body
 
 
 @pytest.mark.parametrize(
-    "headers",
+    ("path", "body", "headers", "expected"),
     [
-        {},  # no custom header: a plain cross-site form post
-        {"X-MiniFlow-Action": "run", "Origin": "https://evil.example"},
-        {"X-MiniFlow-Action": "run", "Host": "attacker.example:8765"},
+        ("/api/control/run", None, {"Host": "evil.example"}, 403),
+        ("/api/control/run", None, {"Host": "evil.example:8765"}, 403),
+        ("/api/control/run", None, {"Origin": "http://evil.example"}, 403),
+        ("/api/control/run", None, {"Origin": "null"}, 403),
+        ("/api/control/run", None, {"Content-Type": "text/plain"}, 415),
+        ("/api/control/run", None, {"Content-Type": "application/x-www-form-urlencoded"}, 415),
+        ("/api/control/run", b"{not json", None, 400),
+        ("/api/control/run", [], None, 400),
+        ("/api/control/run", {"fail_rate": 0}, None, 400),
+        ("/api/control/run", {"flow": "hello"}, None, 400),
+        ("/api/control/run", {"flow": "hello", "fail_rate": 2}, None, 400),
+        ("/api/control/run", {"flow": "nope", "fail_rate": 0}, None, 404),
+        ("/api/control/run", {"flow": "x" * 5000, "fail_rate": 0}, None, 413),
+        ("/api/control/resume", {"run_id": 7, "fail_rate": 0}, None, 400),
+        ("/api/control/resume", {"run_id": "nope", "fail_rate": 0}, None, 404),
+        ("/api/control/explode", {}, None, 404),
     ],
 )
-def test_runs_only_from_the_dashboard_page(tmp_path, headers):
-    with DashboardServer(tmp_path / "s.db", port=0, allow_run=True, offline=True) as server:
-        assert post(server, "/api/examples/earthquakes/run", headers)[0] == 403
+def test_bad_control_requests_are_refused(control_server, path, body, headers, expected):
+    body = {"flow": "hello", "fail_rate": 0} if body is None else body
+    status, reply = call(control_server, "POST", path, body, headers)
+    assert status == expected
+    assert "error" in reply
+    assert control_server.store.list_runs() == []
+    assert idle(control_server)
 
 
-def test_unknown_example_and_paths(tmp_path):
-    with DashboardServer(tmp_path / "s.db", port=0, allow_run=True, offline=True) as server:
-        assert post(server, "/api/examples/rm_rf/run", RUN)[0] == 404
-        assert post(server, "/api/runs", RUN)[0] == 404
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_requests_from_the_dashboard_itself_are_allowed(control_server, host):
+    port = control_server.server_address[1]
+    headers = {"Host": f"{host}:{port}", "Origin": f"http://{host}:{port}"}
+    status, _ = call(
+        control_server, "POST", "/api/control/run", {"flow": "hello", "fail_rate": 0}, headers
+    )
+    assert status == 202
+    wait_until(lambda: idle(control_server))
 
 
-def test_run_button_starts_an_example(tmp_path, monkeypatch):
-    monkeypatch.setenv("MINIFLOW_REPORTS", str(tmp_path / "reports"))
-    monkeypatch.setenv("MINIFLOW_OFFLINE", "0")  # restored afterwards; the runner sets it
-    db = tmp_path / "s.db"
-    with DashboardServer(db, port=0, allow_run=True, offline=True) as server:
-        status, body = post(server, "/api/examples/shop_report/run", RUN)
-        assert (status, body) == (202, {"started": "shop_report"})
-        busy, _ = post(server, "/api/examples/earthquakes/run", RUN)
-        assert busy == 409  # one example at a time
-        deadline = time.monotonic() + 60
-        while server.runner.current is not None:
-            assert time.monotonic() < deadline
-            time.sleep(0.1)
-        runs = json.loads(get(server, "/api/runs")[2])
-    assert runs[0]["flow"] == "shop_report"
-    assert runs[0]["status"] == "SUCCESS"
+def test_stopping_the_dashboard_cancels_its_run(tmp_path, flows_dir):
+    with DashboardServer(tmp_path / "c.db", port=0, flows=flows_dir) as server:
+        call(server, "POST", "/api/control/run", {"flow": "sleepy", "fail_rate": 0.4})
+        wait_until(lambda: slow_is_running(server))
+        run_id = server.store.latest_run("sleepy")
+    with StateStore(tmp_path / "c.db") as store:
+        assert next(r.status for r in store.list_runs() if r.run_id == run_id) == "INTERRUPTED"
+
+
+def test_missing_flows_folder_is_an_error(tmp_path):
+    with pytest.raises(NotADirectoryError):
+        DashboardServer(tmp_path / "c.db", port=0, flows=tmp_path / "nope")
+
+
+def test_ui_command_with_flows(tmp_path, monkeypatch, flows_dir):
+    served = []
+    monkeypatch.setattr(
+        "miniflow.cli._serve_until_interrupted",
+        lambda server: served.append(call(server, "GET", "/api/control")),
+    )
+    args = ["ui", "--db", str(tmp_path / "c.db"), "--flows", str(flows_dir)]
+    assert main([*args, "--no-browser", "--port", "0"]) == 0
+    assert served == [(200, {"flows": ["hello", "sleepy"], "active": None, "error": None})]
+
+
+def test_ui_command_with_missing_flows_folder(tmp_path, capsys):
+    args = ["ui", "--db", str(tmp_path / "c.db"), "--flows", str(tmp_path / "nope")]
+    assert main([*args, "--no-browser", "--port", "0"]) == 2
+    assert "nope" in capsys.readouterr().err

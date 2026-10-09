@@ -59,32 +59,92 @@ miniflow resume examples/faulty_etl.py     # rerun, reusing tasks that already s
 miniflow graph examples/faulty_etl.py --render svg -o flow.svg   # coloured by the latest run
 ```
 
-## Real-world examples
+## No-code flows (JSON)
 
-Four pipelines ship with MiniFlow. Each does a job people recognise, with **live public data**:
+A flow can also be a JSON file of configured **blocks**, with no Python to write. It runs
+on the same scheduler, so retries, resume and the dashboard work the same way.
 
-| Example | What it does | Data |
-|---|---|---|
-| `earthquakes` | Live earthquake monitor: most active regions, alerts for magnitude 5+ | US Geological Survey live feeds |
-| `air_quality` | Air quality and best time to exercise outside for 8 Indian cities, with health alerts | Open-Meteo air-quality and weather forecasts |
-| `news_digest` | Morning digest of the Hacker News front page: reading time and topics of each article | Hacker News API + the articles themselves |
-| `shop_report` | An online shop's monthly sales in 7 currencies, converted to rupees, unusual days flagged | European Central Bank exchange rates (orders are sample data) |
-
-```bash
-miniflow examples                          # list them
-miniflow example air_quality --ui          # run one and watch it in the dashboard
-miniflow example news_digest --offline     # no internet: replay saved snapshots of real data
+```json
+{
+  "params": {"min": {"type": "float", "default": 100}},
+  "steps": {
+    "sales": {"block": "read_csv", "settings": {"path": "data/sales.csv"}},
+    "big":   {"block": "filter", "settings": {"rows": "{{ sales }}", "where": "amount > {{ params.min }}"}},
+    "save":  {"block": "write_csv", "settings": {"rows": "{{ big }}", "path": "out/big.csv"}, "retries": 2}
+  },
+  "on_failure": {"block": "log", "settings": {"message": "failed at {{ failure.step }}", "level": "error"}}
+}
 ```
 
-Reports and simulated alert or email messages are written to `miniflow_reports/`.
-`--offline` replays snapshots recorded from a real run, including its failures (a website
-that never answered fails the same way), so demos work without a network connection.
+- **Placeholders** fill settings in when the step runs: `{{ step }}` (a step's result, which
+  also makes this step wait for it), `{{ step.field.0 }}`, `{{ rows.count }}`,
+  `{{ params.name }}` and `{{ env.NAME }}` (secrets come only from environment variables).
+- **14 built-in blocks**: `http_request`, `read_csv`, `write_csv`, `read_json`, `write_json`,
+  `filter`, `select`, `aggregate`, `sort`, `shell`, `sql`, `email`, `log`, `wait`.
+  `miniflow blocks` lists them and `miniflow blocks filter` describes one.
+- **Plugin blocks**: a `@block` function in a `blocks/` folder next to the flow (see
+  `examples/blocks/currency.py`) is available to every flow in that folder.
+- **Parameters and environments**: `--param min=50`, or `--environment prod` for the values
+  in `environments/prod.json` (and secrets from `environments/prod.env`).
+- **Checked before running**: every problem is reported at once, in plain language, with
+  suggestions for misspelt names.
+
+```bash
+miniflow validate examples/sales_report.json
+miniflow test examples/sales_report.json       # sample inputs and expected step results
+miniflow run examples/sales_report.json --environment dev
+miniflow ui --flows examples                   # edit, validate, save and run in the browser
+```
+
+Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
+searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+An empty flows folder also has **hello_world** and **sales_report** starters. **Use starter**
+creates a compatible JSON flow and, for the sales report, its sample CSV. Open **Parameters**
+to change defaults without editing JSON; use a setting's **Use value from…** selector to insert
+a parameter or prior step. The **Environment** selector lists local environment names while
+keeping their values on disk. Other saved JSON flows appear under **Reusable flows** in the
+palette, with their declared parameters in the settings panel. Nodes also accept annotations.
+Select a node and choose **Run up to selected** to execute just that node and its dependencies.
+MiniFlow reuses results from the latest run when their step configuration, referenced parameters,
+environment values, code, local file inputs and upstream results still match. A changed input
+reruns the affected branch; each partial run appears in normal run history.
+The equivalent CLI command is `miniflow run examples/sales_report.json --until by_region --reuse latest`.
+The **Flow tests** panel accepts sample results for selected steps and expected results for
+downstream steps. Tests run only the needed branch and leave the main run database untouched.
+A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declared `params`
+become settings, and its `outputs` become the result of that step. Inner steps remain visible
+in the run graph.
+
+**Editor 2.0** (V2) adds:
+
+- **Undo and redo** for every change (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z), and **copy, paste and
+  duplicate** (Ctrl/Cmd+C, V, D). Shift-click or Shift-drag selects several steps; pasted
+  steps get new names and their references to each other follow. Delete removes the selection.
+- **Drag and drop** blocks (and reusable flows) from the palette onto the canvas; the step lands
+  where you drop it, at any zoom. Clicking a block still adds it too.
+- **Zoom and pan**: mouse wheel, drag empty space, −/+/**Fit**; **Tidy up** arranges the steps
+  by dependency with the same layout as the run graph. Zooming doesn't change saved positions.
+- **History**: every save keeps the version it replaces in `.history/<flow>/` next to the flow,
+  with the time, account and an optional **Save note**. **Changes** lists what differs from the
+  current file, step by step; **Restore** brings a version back (the replaced one is kept).
+- **Run data on the canvas**: pick a run (the latest by default) to see each step's state and
+  item count, item counts on the arrows, and a sample of the result in the settings panel.
+  Steps whose settings changed since that run, and the steps after them, are greyed out.
+
+For unattended local runs, add a schedule in the editor's **Schedules** panel and start
+`miniflow serve --flows examples --db miniflow.db`. A flow can have named interval schedules
+(`{"name": "frequent", "interval_seconds": 60}`) or daily local-time schedules
+(`{"name": "morning", "daily": "09:00"`). The dashboard shows each next run and records
+launched, missed and failed launches. Scheduled runs appear in the same history and inspection
+views as manual runs. Keep the `serve` process running on the laptop for schedules to fire.
 
 ## Dashboard
 
 ```bash
 miniflow ui                                # open the dashboard: Examples gallery + every run
 miniflow run examples/faulty_etl.py --ui   # run with the dashboard open; it stays up until Ctrl+C
+miniflow ui                                # browse every run in miniflow.db (live, too)
+miniflow ui --flows examples               # ...and start, cancel and resume runs from the page
 ```
 
 Made for people who have never seen a workflow engine:
@@ -111,15 +171,29 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 - **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
   and every run in the database. *Follow latest* jumps to new runs as they start.
 
-Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends),
-`--read-only` and `--offline` for `miniflow ui`. The server only binds to `127.0.0.1`. Its one
-write action is the gallery's Run button, which can start only the bundled examples, one at a
-time, and only from the dashboard's own page (other websites are refused). `--read-only`
-hides it; the dashboard started by `run --ui` is always read-only.
+With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
+set a **fault rate** (passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
+you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
+interrupted run gets a **Resume this run** button, which reruns only its unfinished tasks. Each
+run is a separate `miniflow run`/`resume` process writing to the same database, and one runs at
+a time. Stopping the dashboard cancels the run it started.
 
-**Optional steps:** `@task(optional=True)` marks a step the job can finish without. If it fails
-for good, the steps after it still run and receive `None` in its place, and the run still counts
-as a success. The news digest uses this so one slow website can't cancel the whole email.
+Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends).
+The server only binds to `127.0.0.1`. Without `--flows` it is read-only. With it, the control
+requests are only accepted from the dashboard page itself, and only name a flow in `DIR`.
+
+### Example: Ocean Watch
+
+`examples/ocean_watch.py` is a realistic job for demos: it scans 240 synthetic satellite
+radar tiles for oil spills and ships (12 parallel downloads on threads, 12 detection batches
+in separate processes, then a report and an alert) and writes
+`examples/ocean_watch_data/report.html`. The walkthrough for presenting it is in
+[`docs/demo.md`](docs/demo.md).
+
+```bash
+miniflow run examples/ocean_watch.py                    # about 6 s (10 s the first time)
+miniflow run examples/ocean_watch.py --cpu-workers 1    # about 24 s: why cpu tasks use processes
+```
 
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`

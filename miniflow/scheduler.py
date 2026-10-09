@@ -7,7 +7,8 @@ rank, :meth:`miniflow.graph.DAG.critical_path_lengths`), so tasks that gate
 the most remaining work start first. Tasks are dispatched while their worker
 kind has free capacity, and the loop blocks in
 ``concurrent.futures.wait(..., return_when=FIRST_COMPLETED)``; there is no
-polling. The wait is bounded only by the nearest retry or timeout deadline.
+polling. The wait is bounded only by the nearest retry or timeout deadline, and
+on Windows by a short limit, since Ctrl+C can't interrupt a blocked wait there.
 
 Failures go through :class:`miniflow.retry.RetryPolicy`. A task declared with
 ``optional=True`` that fails for good does not skip anything: the tasks after it run
@@ -36,6 +37,7 @@ import logging
 import os
 import pickle
 import random
+import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
@@ -55,6 +57,10 @@ from miniflow.task import KINDS, Kind, Task
 __all__ = ["Event", "RunResult", "Scheduler", "run"]
 
 log = logging.getLogger("miniflow")
+
+# On Windows a blocked wait can't be interrupted by Ctrl+C (or the dashboard's
+# Ctrl+Break), so the loop wakes up at least this often there to notice it.
+_WAKE_LIMIT: float | None = 0.25 if sys.platform == "win32" else None
 
 Listener = Callable[["Event"], None]
 
@@ -147,6 +153,8 @@ class Scheduler:
         weight: Callable[[Task], float] | None = None,
         listeners: Iterable[Listener] = (),
         rng: random.Random | None = None,
+        signatures: Mapping[str, str | None] | None = None,
+        config_signatures: Mapping[str, str] | None = None,
     ) -> None:
         if async_limit < 1:
             raise ValueError("async_limit must be >= 1")
@@ -159,6 +167,9 @@ class Scheduler:
         self._async_limit = async_limit
         self._rank = dag.critical_path_lengths(weight)
         self._rng = rng
+        self.signatures = dict(signatures) if signatures is not None else None
+        # Settings-only identities, recorded for the editor's "changed since this run".
+        self.config_signatures = dict(config_signatures) if config_signatures is not None else None
 
     # ------------------------------------------------------------------ public
     def run(self, resume_from: str | None = None) -> RunResult:
@@ -170,7 +181,12 @@ class Scheduler:
         owned = self._router_arg is None
         self.router = self._router_arg or ExecutorRouter()
         self._reset()
-        self.run_id = self.store.create_run(self.flow, self.dag)
+        self.run_id = self.store.create_run(
+            self.flow,
+            self.dag,
+            signatures=self.signatures,
+            config_signatures=self.config_signatures,
+        )
         status = "SUCCESS"
         try:
             if resume_from is not None:
@@ -244,9 +260,19 @@ class Scheduler:
 
     def _load_cache(self, previous_run: str) -> None:
         prior = self.store.load_completed(previous_run)
+        prior_graph = self.store.get_graph(previous_run)
+        if self.signatures is not None:
+            runs = {record.run_id: record for record in self.store.list_runs()}
+            if runs[previous_run].flow != self.flow:
+                raise ValueError("cannot reuse results from a different flow")
         for name in self.dag.topological_order():
             # Reuse a result only if everything it was computed from was reused too.
-            if name in prior and all(u in self.cached for u in self.dag.upstream[name]):
+            same = self.signatures is None or (
+                self.signatures.get(name) is not None
+                and self.signatures[name]
+                == prior_graph.get("tasks", {}).get(name, {}).get("signature")
+            )
+            if same and name in prior and all(u in self.cached for u in self.dag.upstream[name]):
                 self.cached.add(name)
                 self.results[name] = prior[name]
                 self.store.save_result(
@@ -269,6 +295,8 @@ class Scheduler:
             if not self.running and not self.delayed:
                 return
             timeout = self._next_wakeup()
+            if _WAKE_LIMIT is not None:
+                timeout = _WAKE_LIMIT if timeout is None else min(timeout, _WAKE_LIMIT)
             if self.running:
                 done, _ = wait(list(self.running), timeout=timeout, return_when=FIRST_COMPLETED)
                 for fut in done:

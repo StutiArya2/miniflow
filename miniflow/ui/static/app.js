@@ -26,6 +26,9 @@ const S = {
   pollTimer: null,
   nodes: new Map(),   // name -> <g>
   edges: [],          // [{from, to, el}]
+  control: null,      // GET /api/control, or null when the dashboard is read-only
+  controlBusy: false, // a control request is in flight
+  controlError: null, // why the last control request was refused
 };
 
 // ------------------------------------------------------------------ helpers
@@ -113,18 +116,23 @@ function initTheme() {
 }
 
 // -------------------------------------------------------------------- runs
+// Responses can arrive out of order; only the newest request's answer is used.
+let runsRequest = 0, controlRequest = 0;
+
 async function loadRuns() {
+  const n = ++runsRequest;
+  let runs;
   try {
-    S.runs = await getJSON("/api/runs");
+    runs = await getJSON("/api/runs");
   } catch (e) {
     console.warn(e);
     return;
   }
+  if (n !== runsRequest) return;
+  S.runs = runs;
   renderRuns();
   const latest = S.runs[0];
-  $("empty").hidden = S.runs.length > 0;
-  if (!S.runs.length) $("gallery").open = true;
-  $("dashboard").hidden = S.runs.length === 0;
+  renderEmpty();
   if (!latest) return;
   if (!S.runId || (S.follow && latest.run_id !== S.runId)) {
     await selectRun(latest.run_id);
@@ -167,9 +175,105 @@ function renderRuns() {
   }));
 }
 
+function renderEmpty() {
+  $("empty").hidden = S.runs.length > 0;
+  $("dashboard").hidden = S.runs.length === 0;
+  $("empty-cli").hidden = !!S.control;
+  $("empty-control").hidden = !S.control;
+}
+
 function setFollow(on) {
   S.follow = on;
   $("follow").checked = on;
+}
+
+// ----------------------------------------------------------------- control
+// Only when the dashboard was started with --flows; otherwise /api/control is a 404.
+async function loadControl() {
+  const n = ++controlRequest;
+  let res, data = null;
+  try {
+    res = await fetch("/api/control", { cache: "no-store" });
+    if (res.ok) data = await res.json();
+  } catch (e) {
+    console.warn(e);
+    return;
+  }
+  if (n !== controlRequest || !(res.ok || res.status === 404)) return;
+  S.control = data;
+  renderControl();
+  const active = S.control && S.control.active;
+  if (active && active.run_id && S.follow && active.run_id !== S.runId) loadRuns();
+}
+
+const failRate = () => Number($("ctl-rate").value) / 100;
+
+async function control(action, body) {
+  S.controlBusy = true;
+  S.controlError = null;
+  renderControl();
+  let started = false;
+  try {
+    const res = await fetch(`/api/control/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      started = action !== "cancel";
+      if (started) setFollow(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      S.controlError = data.error || `${action} failed (${res.status})`;
+    }
+  } catch (e) {
+    S.controlError = String(e);
+  } finally {
+    S.controlBusy = false;
+  }
+  await loadControl();
+  // Switch to the new run as soon as its process has created it, not at the next poll.
+  for (let i = 0; started && i < 25 && S.control?.active && !S.control.active.run_id; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await loadControl();
+  }
+  loadRuns();
+}
+
+function renderControl() {
+  const c = S.control;
+  $("control").hidden = !c;
+  renderEmpty();
+  renderResume();
+  if (!c) return;
+  const select = $("ctl-flow");
+  if ([...select.options].map((o) => o.value).join() !== c.flows.join()) {
+    const current = select.value;
+    select.replaceChildren(...c.flows.map((f) => h("option", { value: f }, f)));
+    if (c.flows.includes(current)) select.value = current;
+  }
+  const busy = S.controlBusy || !!c.active;
+  select.disabled = busy;
+  $("ctl-run").disabled = busy || c.flows.length === 0;
+  $("ctl-active").hidden = !c.active;
+  if (c.active) {
+    $("ctl-active").replaceChildren(
+      c.active.action === "resume" ? "Resuming " : "Running ", h("strong", {}, c.active.flow), "…");
+  }
+  $("ctl-cancel").hidden = !c.active;
+  $("ctl-cancel").disabled = S.controlBusy;
+  const error = S.controlError || c.error;
+  $("ctl-error").hidden = !error;
+  $("ctl-error").textContent = error || "";
+}
+
+// Shown for the run on screen when it failed or was interrupted and its flow is in the folder.
+function renderResume() {
+  const c = S.control, r = S.run;
+  const show = !!(c && r && !c.active && !S.controlBusy && r.finished_at
+    && (r.status === "FAILED" || r.status === "INTERRUPTED") && c.flows.includes(r.flow));
+  $("ctl-resume").hidden = !show;
+  if (show) $("ctl-resume").title = `Rerun the unfinished tasks of ${r.run_id} with a ${$("ctl-rate").value}% fault rate`;
 }
 
 // ---------------------------------------------------------------- one run
@@ -221,6 +325,7 @@ function openStream(runId, since) {
     failures = 0;
     updateGraph();
     renderOutcome();
+    renderProblems();
     renderSummary();
     renderDetails();
     renderTimeline();
@@ -268,6 +373,7 @@ function startPolling(runId) {
 function renderAll() {
   renderStory();
   renderOutcome();
+  renderProblems();
   renderMeta();
   renderSummary();
   updateGraph();
@@ -292,6 +398,7 @@ function renderMeta() {
     h("span", {}, `started ${fmtClock(r.started_at)}`),
     h("span", {}, r.finished_at ? `took ${fmtDur(dur)}` : `${fmtDur(dur)} so far`),
   );
+  renderResume();
 }
 
 function counts() {
@@ -597,9 +704,13 @@ function renderDetails() {
     h("div", {}, pill(t.state), " ", h("span", { class: "muted" }, `${info.kind} worker${info.optional ? " · optional step" : ""}`)),
     info.description ? [h("div", { class: "section-title" }, "What this step does"), h("p", { class: "desc" }, info.description)] : null,
     t.preview ? [h("div", { class: "section-title" }, t.from_cache ? "Result (reused from the previous run)" : "Result"), h("pre", { class: "preview box" }, t.preview)] : null,
+    t.sample !== null && t.sample !== undefined && typeof t.sample === "object" ? [
+      h("div", { class: "section-title" }, "Sample output"), renderSample(t.sample, t.item_count),
+    ] : null,
     h("dl", { class: "kv" },
       h("dt", {}, "Attempts"), h("dd", {}, String(t.attempts || 0)),
       h("dt", {}, "Duration"), h("dd", {}, took === null ? "–" : fmtDur(took)),
+      h("dt", {}, "Items"), h("dd", {}, t.item_count == null ? "–" : String(t.item_count)),
       h("dt", {}, "Started"), h("dd", {}, fmtClock(t.started_at)),
       h("dt", {}, "Saved"), h("dd", {}, t.from_cache ? "reused from the previous run" : t.has_result ? "yes, kept for resume" : t.state === "SUCCESS" ? "no (reruns on resume)" : "–"),
       h("dt", {}, "Upstream"), h("dd", {}, info.after.length ? h("div", { class: "links" }, info.after.map(link)) : "none (root)"),
@@ -619,6 +730,56 @@ function renderDetails() {
       a.error ? h("pre", { class: "error" }, firstLine(a.error)) : null)),
   ];
   body.replaceChildren(...parts.flat(Infinity).filter(Boolean));
+}
+
+function renderSample(sample, count) {
+  if (Array.isArray(sample) && sample.length && sample[0] && typeof sample[0] === "object" && !Array.isArray(sample[0])) {
+    const rows = sample.filter((row) => row && typeof row === "object" && !Array.isArray(row));
+    const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+    const table = h("table", { class: "sample-table" },
+      h("thead", {}, h("tr", {}, columns.map((key) => h("th", {}, key)))),
+      h("tbody", {}, rows.map((row) => h("tr", {}, columns.map((key) =>
+        h("td", {}, typeof row[key] === "string" ? row[key] : JSON.stringify(row[key] ?? null)))))));
+    return h("div", { class: "sample-scroll" }, table,
+      count != null ? h("p", { class: "hint" }, `Showing ${rows.length} of ${count} items`) : null);
+  }
+  return h("pre", { class: "preview box" }, JSON.stringify(sample, null, 2));
+}
+
+function renderProblems() {
+  const box = $("run-problems");
+  const problems = [...S.tasks.values()].filter((task) => task.state === "FAILED" || task.state === "SKIPPED");
+  box.hidden = problems.length === 0;
+  if (!problems.length) return;
+  $("run-problems-body").replaceChildren(...problems.map((task) =>
+    h("div", { class: "problem-row" },
+      h("button", { type: "button", class: "link", onclick: () => select(task.task) }, task.task),
+      pill(task.state),
+      h("span", {}, firstLine(task.error) || (task.state === "SKIPPED" ? "Skipped after an earlier failure" : "Step failed")))));
+}
+
+async function loadSchedules() {
+  try {
+    const response = await fetch("/api/schedules", { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    const panel = $("schedules-panel");
+    panel.hidden = !data.schedules.length && !data.events.length && !Object.keys(data.problems).length;
+    if (panel.hidden) return;
+    $("schedules-body").replaceChildren(...data.schedules.map((item) =>
+      h("div", { class: "schedule-row" },
+        h("strong", {}, `${item.flow} · ${item.name}`),
+        h("span", {}, item.daily ? `Daily ${item.daily}` : `Every ${item.interval_seconds}s`),
+        h("span", {}, `Next: ${new Date(item.next_run * 1000).toLocaleString()}`))));
+    const events = data.events.slice(0, 8).map((event) =>
+      h("div", { class: "schedule-row" },
+        pill(event.status),
+        h("span", {}, `${event.flow} · ${event.schedule} · ${new Date(event.due_at * 1000).toLocaleString()}`),
+        event.message ? h("span", { class: "muted" }, event.message) : null));
+    const problems = Object.entries(data.problems).map(([flow, message]) =>
+      h("p", { class: "error" }, `${flow}: ${message}`));
+    $("schedule-events").replaceChildren(...events, ...problems);
+  } catch { /* dashboard is still usable if a schedule read fails */ }
 }
 
 // ---------------------------------------------------------------- examples
@@ -729,8 +890,26 @@ function init() {
     S.follow = e.target.checked;
     if (S.follow) loadRuns();
   });
+  $("ctl-rate").addEventListener("input", () => {
+    $("ctl-rate-value").textContent = `${$("ctl-rate").value}%`;
+    renderResume();  // its tooltip names the rate
+  });
+  $("ctl-run").addEventListener("click", () => control("run", { flow: $("ctl-flow").value, fail_rate: failRate() }));
+  $("ctl-resume").addEventListener("click", () => control("resume", { run_id: S.runId, fail_rate: failRate() }));
+  $("ctl-cancel").addEventListener("click", () => control("cancel", {}));
+  // Check the controls every second while a run is active, otherwise every 3 s.
+  let ticks = 0;
+  loadControl().then(() => {
+    if (!S.control) return;  // read-only dashboard
+    setInterval(() => {
+      ticks += 1;
+      if (S.control && (S.control.active || ticks % 3 === 0)) loadControl();
+    }, 1000);
+  });
   loadExamples();
   setInterval(loadExamples, 3000);
+  loadSchedules();
+  setInterval(loadSchedules, 3000);
   const m = /run=([\w-]+)/.exec(location.hash);
   if (m) {
     setFollow(false);
