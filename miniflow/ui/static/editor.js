@@ -62,6 +62,18 @@ async function studioApi(path, data) {
   return result;
 }
 
+async function studioUploadCsv(file) {
+  if (file.size > 10 * 1024 * 1024) throw new Error("CSV file must be 10 MB or smaller.");
+  const response = await fetch(`/api/flows/upload-csv?name=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-MiniFlow-Upload": "csv" },
+    body: file,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  return result.path;
+}
+
 async function studioList() {
   const names = await studioApi("/api/flows");
   const select = document.getElementById("studio-flow");
@@ -587,6 +599,29 @@ function studioInspector() {
     field.placeholder = setting.secret ? "{{ env.NAME }}" : "";
     field.onchange = () => { step.settings[setting.name] = studioValue(field.value, setting.types); studioCommit(); };
     label.append(field);
+    if (step.block === "read_csv" && setting.name === "path") {
+      const upload = document.createElement("button");
+      upload.type = "button"; upload.className = "btn"; upload.textContent = "Upload CSV…";
+      const picker = document.createElement("input");
+      picker.type = "file"; picker.accept = ".csv,text/csv"; picker.hidden = true;
+      upload.onclick = () => picker.click();
+      picker.onchange = async () => {
+        const file = picker.files?.[0];
+        if (!file) return;
+        upload.disabled = true; upload.textContent = "Uploading…";
+        try {
+          const path = await studioUploadCsv(file);
+          if (Studio.flow.steps[name] === step) {
+            field.value = path;
+            step.settings.path = path;
+            studioCommit();
+            studioMessage(`Uploaded ${file.name}. The path is ready to use.`);
+          }
+        } catch (error) { studioMessage(`Upload failed: ${error}`, true); }
+        finally { upload.disabled = false; upload.textContent = "Upload CSV…"; picker.value = ""; }
+      };
+      label.append(upload, picker);
+    }
     if (!(field instanceof HTMLSelectElement)) {
       const source = document.createElement("select");
       source.setAttribute("aria-label", `Use value for ${setting.name}`);

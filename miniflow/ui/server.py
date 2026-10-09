@@ -12,6 +12,7 @@ Endpoints:
 ``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
 ``POST /api/control/partial``      ``{"flow": name, "step": name}``: run through one step
 ``POST /api/control/cancel``       ``{}``: stop the active run
+``POST /api/flows/upload-csv``      raw CSV bytes; save in the flow workspace
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
 scheduler writes. It works while a run is in progress (in the same process
@@ -68,6 +69,7 @@ _HEARTBEAT_SECONDS = 10.0
 _RUNS_LIMIT = 200
 _MAX_BODY = 4096
 _MAX_FLOW_BODY = 262144
+_MAX_UPLOAD_BODY = 10 * 1024 * 1024
 _ACTIONS = ("run", "resume", "partial", "cancel")
 
 
@@ -238,6 +240,9 @@ class _Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "hooks"]:
                 self._hook(parts[2], parts[3])
                 return
+            if parts == ["api", "flows", "upload-csv"] and self.server.workspace is not None:
+                self._upload_csv()
+                return
             if parts == ["api", "flows", "template"] and self.server.workspace is not None:
                 body = self._control_body()
                 name = _text(body, "name")
@@ -379,6 +384,34 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             raise ControlError("the body must be a JSON object", HTTPStatus.BAD_REQUEST)
         return body
+
+    def _upload_csv(self) -> None:
+        """Accept a bounded binary upload from the local editor."""
+        workspace = self.server.workspace
+        assert workspace is not None
+        if self.headers.get("Host", "").lower() not in self.server.hosts:
+            raise ControlError("unexpected Host header", HTTPStatus.FORBIDDEN)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {
+            f"http://{host}" for host in self.server.hosts
+        }:
+            raise ControlError("requests from other sites are not allowed", HTTPStatus.FORBIDDEN)
+        if self.headers.get("X-MiniFlow-Upload") != "csv":
+            raise ControlError("upload must come from the editor", HTTPStatus.FORBIDDEN)
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/octet-stream":
+            raise ControlError("upload must be a file", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            raise ControlError("Content-Length is required", HTTPStatus.LENGTH_REQUIRED) from None
+        if not 0 < length <= _MAX_UPLOAD_BODY:
+            raise ControlError(
+                "CSV file must be between 1 byte and 10 MB", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            )
+        filename = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
+        relative = workspace.upload_csv(filename, self.rfile.read(length))
+        self._send_json({"path": relative}, HTTPStatus.CREATED)
 
     # --------------------------------------------------------------- replies
     def _hook(self, flow: str, name: str) -> None:
