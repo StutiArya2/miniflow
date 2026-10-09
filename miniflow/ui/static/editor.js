@@ -6,6 +6,7 @@ const Studio = {
   subflows: new Map(), environments: [],
   connecting: null, problems: [], dirty: false, visible: false,
   testIndex: 0,
+  section: "examples",       // which top tab is current: examples, runs or editor
   multi: new Set(),          // extra selected steps (Shift-click or Shift-drag)
   clipboard: null,           // copied steps as JSON text
   runData: null,             // run shown on the canvas: {run, graph, tasks}
@@ -22,10 +23,34 @@ function studioShow(show) {
   Studio.visible = show;
   document.body.classList.toggle("studio-active", show);
   document.getElementById("studio").hidden = !show;
-  document.getElementById("view-editor").hidden = show;
-  document.getElementById("view-runs").hidden = !show;
+  studioNav(show ? "editor" : Studio.section === "editor" ? "examples" : Studio.section);
+  try { history.replaceState(null, "", show ? "#editor" : S.runId ? `#run=${S.runId}` : location.pathname); }
+  catch { /* sandboxed */ }
   if (show) { studioRender(); studioLoadRuns(); studioScheduleCheck(); }
   else loadRuns();
+}
+
+/* Top navigation: Examples | Runs | Editor. The current section is marked for the eye and
+ * for screen readers. */
+function studioNav(section) {
+  Studio.section = section;
+  for (const name of ["examples", "runs", "editor"]) {
+    const tab = document.getElementById(`view-${name}`);
+    if (name === section) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
+}
+
+/* Leave the editor (if open) and go to the example gallery or the run view. */
+function studioGo(section) {
+  studioShow(false);
+  studioNav(section);
+  const target = section === "examples"
+    ? document.getElementById("gallery")
+    : document.getElementById("dashboard").hidden ? document.querySelector(".runs-panel") : document.getElementById("dashboard");
+  if (section === "examples" && target) target.open = true;
+  window.scrollTo({ top: 0 });
+  if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 async function studioApi(path, data) {
@@ -637,7 +662,15 @@ function studioPartsMissing() {
   return STUDIO_PARTS.filter((name) => typeof window[name] !== "function");
 }
 
+/* The Examples and Runs tabs work even if the editor itself can't load. */
+function studioNavInit() {
+  document.getElementById("view-examples").onclick = () => studioGo("examples");
+  document.getElementById("view-runs").onclick = () => studioGo("runs");
+  document.getElementById("brand-home").onclick = (event) => { event.preventDefault(); studioGo("examples"); };
+}
+
 async function studioInit() {
+  studioNavInit();
   const missing = studioPartsMissing();
   if (missing.length) {
     const button = document.getElementById("view-editor");
@@ -665,7 +698,6 @@ async function studioInit() {
       new Option(`${item.name} — ${item.description}`, item.name)));
     document.getElementById("view-editor").hidden = false;
     document.getElementById("view-editor").onclick = () => studioShow(true);
-    document.getElementById("view-runs").onclick = () => studioShow(false);
     document.getElementById("studio-flow").onchange = (event) => studioOpen(event.target.value);
     document.getElementById("studio-new").onclick = studioNew;
     document.getElementById("studio-use-template").onclick = studioUseTemplate;
