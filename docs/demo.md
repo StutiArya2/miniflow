@@ -37,13 +37,13 @@ Open `examples/ocean_watch.py` and point out:
 
 ## 3. Run it (2 min)
 
-In the dashboard pick **ocean_watch**, set **Fault rate** to 20 % and press **▶ Run**. Point at:
+In the dashboard pick **ocean_watch**, set **Simulate failures** to 20 % and press **Run**. Point at:
 
-- **Graph**: the columns fill left to right; nothing starts before what it depends on.
-- **Timeline**: downloads arrive in two waves (8 threads for 12 downloads); each
+- **Graph** tab: the columns fill left to right; nothing starts before what it depends on.
+- **Timeline** tab: downloads arrive in two waves (8 threads for 12 downloads); each
   `detect` runs in its own `pid-…` lane, so they truly run at the same time on separate cores.
 - **Orange / dotted lines**: a download timed out and was retried after a short wait.
-- **Parallel speedup** card (about ×7): total work time divided by wall-clock time.
+- **Parallel speedup** at the top of the Timeline tab (about ×7): total work time divided by wall-clock time.
 
 Then open `report.html`: the accuracy cards (every real ship and spill was found, no false
 alarms; we know because the tiles are synthetic and record the right answers) and the alert
@@ -57,21 +57,21 @@ Run the same job with a single worker process for detection, in a terminal:
 uv run miniflow run examples/ocean_watch.py --cpu-workers 1
 ```
 
-It takes about 24 s instead of about 6 s. Show both runs in the **Runs** table. Talking point:
+It takes about 24 s instead of about 6 s. Show both runs in **Recent runs** in the sidebar. Talking point:
 Python threads can't run Python code on two cores at once (the GIL), so CPU-heavy steps go
 to separate processes, while waiting steps share cheap threads.
 
 ## 5. Failures don't sink the job (2 min)
 
-Set **Fault rate** to 70 % and press **Run**. Usually 2 to 5 of the 12 downloads still fail
+Set **Simulate failures** to 70 % and press **Run**. Usually 2 to 5 of the 12 downloads still fail
 after 3 retries (press Run again if none do). Point at:
 
 - the failed download in red, and everything that depends on it **skipped** (grey, dashed),
   while the other batches carry on;
-- the run ends **failed**, with the reason in **Task details** (click the red box).
+- the run ends **failed**, with the reason under **What went wrong** and in **Step details** (click the red box).
 
-Now set the slider to 0 % and press **↻ Resume this run**. Only the failed batches and the
-steps after them run again; everything else is marked **↺ reused**.
+Now set the slider to 0 % and press **Resume this run**. Only the failed batches and the
+steps after them run again; everything else is marked **reused**.
 
 ## 6. Crash recovery (1 min)
 

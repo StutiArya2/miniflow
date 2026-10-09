@@ -34,6 +34,7 @@ function studioShow(show) {
  * for screen readers. */
 function studioNav(section) {
   Studio.section = section;
+  document.body.dataset.view = section;
   for (const name of ["examples", "runs", "editor"]) {
     const tab = document.getElementById(`view-${name}`);
     if (name === section) tab.setAttribute("aria-current", "page");
@@ -45,12 +46,8 @@ function studioNav(section) {
 function studioGo(section) {
   studioShow(false);
   studioNav(section);
-  const target = section === "examples"
-    ? document.getElementById("gallery")
-    : document.getElementById("dashboard").hidden ? document.querySelector(".runs-panel") : document.getElementById("dashboard");
-  if (section === "examples" && target) target.open = true;
+  if (section === "examples") document.getElementById("gallery").open = true;
   window.scrollTo({ top: 0 });
-  if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 async function studioApi(path, data) {
@@ -730,6 +727,8 @@ function studioNavInit() {
   document.getElementById("view-examples").onclick = () => studioGo("examples");
   document.getElementById("view-runs").onclick = () => studioGo("runs");
   document.getElementById("brand-home").onclick = (event) => { event.preventDefault(); studioGo("examples"); };
+  // A link to a run (#run=…) opens on the run view, so mark the Runs tab.
+  if (/run=/.test(location.hash)) studioNav("runs");
 }
 
 async function studioInit() {

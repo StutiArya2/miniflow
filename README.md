@@ -174,28 +174,30 @@ Made for people who have never seen a workflow engine:
 
 - **Examples gallery**: one card per real-world example with a plain-English description and a
   **Run** button. Runs started there appear live.
-- **Story**: what the pipeline is for, what to watch for while it runs, and a short
-  "How to read this page" guide.
+- **Story**: what the pipeline is for and what to watch for while it runs.
 - **What this run found**: the results of the pipeline's key steps in plain words, for example the
   city ranking, the alerts sent or revenue by country.
-- **Step details**: what each step does, what it produced, every attempt and, for a failure, the
-  reason in one line (the Python traceback is folded away).
+- **Step details**: what each step does, what it produced and, for a failure, the reason in one
+  line. Attempts, dependencies and the Python traceback are folded under *More details*.
 
 A local web page at `http://127.0.0.1:8765` (the next free port if that one is taken), built
 only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 
-- **Graph**: tasks laid out by dependency depth and coloured by state; the shape shows the
-  worker kind (box = io, stacked box = cpu, pill = async). Running tasks pulse and edges into
-  skipped tasks are dashed.
-- **Timeline**: one lane per worker thread, process or event loop, one bar per attempt, with
-  dotted lines for retry backoff, so the parallelism and the retries are visible.
-- **Task details**: state, attempts with the worker that ran each one, the full traceback, and
-  upstream and downstream links.
-- **Summary and runs**: progress, elapsed time, parallel speedup (task time ÷ wall time), retries,
-  and every run in the database. *Follow latest* jumps to new runs as they start.
+- **List, Graph and Timeline tabs**: a table of every step with its state, tries and time.
+  The graph shows tasks laid out by dependency depth, with a coloured dot for their state; the
+  shape shows the worker kind (box = io, stacked box = cpu, pill = async). Edges that skip
+  columns are routed between the boxes, and hovering or selecting a step highlights everything
+  upstream and downstream of it. Drag to pan, Ctrl + scroll (or the buttons) to zoom; a minimap
+  appears when the graph doesn't fit.
+- **Timeline** (a Gantt chart): one row per step or per worker, one bar per attempt, dotted lines
+  for retry backoff and a hover card for each attempt. *Critical path* highlights the chain of
+  steps that decided the run's length; otherwise the header shows the parallel speedup (task
+  time ÷ wall time).
+- **What went wrong**: each failed step with its reason, and how many later steps were skipped.
+- **Summary and runs**: steps done, time taken, retries, and the recent runs in the sidebar. *Follow latest run* jumps to new runs as they start.
 
 With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
-set a **fault rate** (passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
+set **Simulate failures** (a fault rate passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
 you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
 interrupted run gets a **Resume this run** button, which reruns only its unfinished tasks. Each
 run is a separate `miniflow run`/`resume` process writing to the same database, and one runs at

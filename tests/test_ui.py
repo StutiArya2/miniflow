@@ -103,7 +103,7 @@ def test_index_and_static_files(server):
     assert status == 200
     assert ctype.startswith("text/html")
     assert b"MiniFlow" in body
-    for name, kind in [("app.js", "javascript"), ("style.css", "css")]:
+    for name, kind in [("app.js", "javascript"), ("charts.js", "javascript"), ("style.css", "css")]:
         status, ctype, body = get(server, f"/static/{name}")
         assert status == 200
         assert kind in ctype
