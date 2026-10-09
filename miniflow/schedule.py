@@ -1,4 +1,4 @@
-"""Local interval and daily schedules declared inside JSON flows."""
+"""Local interval, daily and cron schedules declared inside JSON flows."""
 
 from __future__ import annotations
 
@@ -8,21 +8,26 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from miniflow.cron import CronError, parse_cron
+
 _CLOCK = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d\Z")
 
 
 @dataclass(frozen=True)
 class Schedule:
-    """A named local schedule; exactly one of interval_seconds and daily is set."""
+    """A named local schedule; exactly one of interval_seconds, daily and cron is set."""
 
     name: str
     interval_seconds: float | None = None
     daily: str | None = None
+    cron: str | None = None
 
     def next_after(self, now: float) -> float:
         """Next due timestamp strictly after ``now`` in the laptop's local time zone."""
         if self.interval_seconds is not None:
             return now + self.interval_seconds
+        if self.cron is not None:
+            return parse_cron(self.cron).next_after(now)
         assert self.daily is not None
         hour, minute = map(int, self.daily.split(":"))
         day = datetime.fromtimestamp(now).date()
@@ -54,12 +59,23 @@ def parse_schedules(raw: Any) -> tuple[tuple[Schedule, ...], list[str]]:
             problems.append(f"{where}: name {name!r} is repeated")
         seen.add(name)
         for key in item:
-            if key not in ("name", "interval_seconds", "daily"):
+            if key not in ("name", "interval_seconds", "daily", "cron"):
                 problems.append(f"{where}: unknown field {key!r}")
         interval = item.get("interval_seconds")
         daily = item.get("daily")
-        if (interval is None) == (daily is None):
-            problems.append(f"{where}: set either interval_seconds or daily (HH:MM)")
+        cron = item.get("cron")
+        if [interval, daily, cron].count(None) != 2:
+            problems.append(f"{where}: set exactly one of interval_seconds, daily (HH:MM) or cron")
+            continue
+        if cron is not None:
+            try:
+                if not isinstance(cron, str):
+                    raise CronError("should be text like '0 9 * * mon-fri'")
+                parse_cron(cron)
+            except CronError as exc:
+                problems.append(f"{where}: cron: {exc}")
+            else:
+                schedules.append(Schedule(name=name, cron=cron))
             continue
         if interval is not None:
             if (
