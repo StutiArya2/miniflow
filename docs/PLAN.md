@@ -171,6 +171,11 @@ Configurable parallel run slots are implemented for different flows; repeat laun
 flow wait in the queue. The browser demo covered the schedule editor, webhook and file trigger;
 the milestone PR remains.
 
+**Milestone 3 (smarter flows): design ready for team review.** The proposed mutable run
+graph, per-item resume identity, branch skip semantics and failure paths are in
+`docs/superpowers/specs/2026-10-09-v3-m3-smart-flows-design.md`. Megha and Stuti should
+approve the scheduler and store interface changes before implementation, per `CLAUDE.md`.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
