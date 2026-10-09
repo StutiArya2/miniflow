@@ -96,7 +96,10 @@ miniflow run examples/sales_report.json --environment dev
 miniflow ui --flows examples                   # edit, validate, save and run in the browser
 ```
 
-Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
+The top bar has three tabs, **Examples**, **Runs** and **Editor**, always visible and with the
+current one highlighted; the MiniFlow logo also goes back to Examples.
+
+Use the **Editor** tab in the dashboard to open a visual canvas. Add blocks from the
 searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
 An empty flows folder also has **hello_world** and **sales_report** starters. **Use starter**
 creates a compatible JSON flow and, for the sales report, its sample CSV. Open **Parameters**

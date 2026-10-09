@@ -306,7 +306,8 @@ async function selectRun(runId) {
   S.attempts = d.attempts;
   S.skew = d.now - Date.now() / 1000;
   if (changedRun) S.selected = null;
-  try { history.replaceState(null, "", `#run=${runId}`); } catch { /* sandboxed */ }
+  // While the editor is open the address stays #editor, so a reload comes back to it.
+  try { if (!(typeof Studio === "object" && Studio.visible)) history.replaceState(null, "", `#run=${runId}`); } catch { /* sandboxed */ }
   buildGraph();
   renderAll();
   renderRuns();

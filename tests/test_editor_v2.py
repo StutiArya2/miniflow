@@ -267,3 +267,26 @@ def test_editor_reports_parts_that_failed_to_load(tmp_path: Path):
     assert parts
     for part in parts:
         assert any(f"function {part}(" in text for text in [editor, *served.values()]), part
+
+
+def test_dashboard_has_navigation_tabs_that_work_without_the_editor(tmp_path: Path):
+    """Examples and Runs must stay reachable from the editor, and when the editor can't load."""
+    import http.client
+    from urllib.parse import urlsplit
+
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        url = urlsplit(server.url)
+
+        def get(path: str) -> str:
+            conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+            conn.request("GET", path)
+            body = conn.getresponse().read().decode()
+            conn.close()
+            return body
+
+        page, editor = get("/"), get("/static/editor.js")
+    for tab in ("view-examples", "view-runs", "view-editor"):
+        assert f'id="{tab}"' in page
+    assert 'id="brand-home"' in page
+    # the tabs are wired before the editor's own parts are checked
+    assert editor.index("studioNavInit();") < editor.index("const missing = studioPartsMissing();")
