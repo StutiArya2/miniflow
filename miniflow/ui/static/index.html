@@ -39,6 +39,7 @@
         <label>Environment <select id="studio-environment"><option value="">Default</option></select></label>
         <button type="button" id="studio-validate" class="btn">Validate</button>
         <button type="button" id="studio-test" class="btn">Test</button>
+        <label>Save note <input id="studio-save-message" autocomplete="off" placeholder="What changed? (optional)"></label>
         <button type="button" id="studio-save" class="btn">Save</button>
         <button type="button" id="studio-run" class="btn primary">▶ Run</button>
         <button type="button" id="studio-partial" class="btn">Run up to selected</button>
@@ -50,6 +51,10 @@
       <details id="studio-schedule-panel" class="panel studio-test-panel">
         <summary>Schedules <span class="hint">Run this flow locally at an interval or time of day</span></summary>
         <div id="studio-schedule-editor"></div>
+      </details>
+      <details id="studio-history-panel" class="panel studio-test-panel">
+        <summary>History <span class="hint">Earlier saved versions: see what changed, or restore one</span></summary>
+        <div id="studio-history"></div>
       </details>
       <details id="studio-params-panel" class="panel studio-test-panel">
         <summary>Parameters <span class="hint">Values you can reuse as {{ params.name }} in block settings</span></summary>
@@ -65,6 +70,21 @@
           <div id="studio-subflows" class="studio-blocks"></div>
         </aside>
         <div class="studio-center">
+          <div class="studio-canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button type="button" id="studio-undo" class="btn" title="Undo (Ctrl+Z)">↶ Undo</button>
+            <button type="button" id="studio-redo" class="btn" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-copy" class="btn" title="Copy selected steps (Ctrl+C)">Copy</button>
+            <button type="button" id="studio-paste" class="btn" title="Paste (Ctrl+V)">Paste</button>
+            <button type="button" id="studio-duplicate" class="btn" title="Duplicate (Ctrl+D)">Duplicate</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-zoom-out" class="btn" title="Zoom out" aria-label="Zoom out">−</button>
+            <span id="studio-zoom-level" class="studio-zoom-level">100%</span>
+            <button type="button" id="studio-zoom-in" class="btn" title="Zoom in" aria-label="Zoom in">+</button>
+            <button type="button" id="studio-fit" class="btn" title="Fit the flow on screen">Fit</button>
+            <button type="button" id="studio-tidy" class="btn" title="Arrange steps by dependency">Tidy up</button>
+            <label class="studio-run-pick">Show run <select id="studio-run-data"><option value="">No runs yet</option></select></label>
+          </div>
           <div class="studio-canvas-scroll">
             <div id="studio-canvas" class="studio-canvas" aria-label="Workflow canvas">
               <svg id="studio-wires" aria-hidden="true"></svg>
@@ -179,6 +199,10 @@
   </main>
 
   <script src="/static/app.js"></script>
+  <script src="/static/editor-history.js"></script>
+  <script src="/static/editor-view.js"></script>
+  <script src="/static/editor-versions.js"></script>
+  <script src="/static/editor-data.js"></script>
   <script src="/static/editor.js"></script>
 </body>
 </html>

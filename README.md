@@ -115,6 +115,20 @@ A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declar
 become settings, and its `outputs` become the result of that step. Inner steps remain visible
 in the run graph.
 
+**Editor 2.0** (V2) adds:
+
+- **Undo and redo** for every change (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z), and **copy, paste and
+  duplicate** (Ctrl/Cmd+C, V, D). Shift-click or Shift-drag selects several steps; pasted
+  steps get new names and their references to each other follow. Delete removes the selection.
+- **Zoom and pan**: mouse wheel, drag empty space, −/+/**Fit**; **Tidy up** arranges the steps
+  by dependency with the same layout as the run graph. Zooming doesn't change saved positions.
+- **History**: every save keeps the version it replaces in `.history/<flow>/` next to the flow,
+  with the time, account and an optional **Save note**. **Changes** lists what differs from the
+  current file, step by step; **Restore** brings a version back (the replaced one is kept).
+- **Run data on the canvas**: pick a run (the latest by default) to see each step's state and
+  item count, item counts on the arrows, and a sample of the result in the settings panel.
+  Steps whose settings changed since that run, and the steps after them, are greyed out.
+
 For unattended local runs, add a schedule in the editor's **Schedules** panel and start
 `miniflow serve --flows examples --db miniflow.db`. A flow can have named interval schedules
 (`{"name": "frequent", "interval_seconds": 60}`) or daily local-time schedules

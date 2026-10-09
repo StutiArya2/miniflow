@@ -57,6 +57,10 @@ _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
+    "editor-history.js": "text/javascript; charset=utf-8",
+    "editor-view.js": "text/javascript; charset=utf-8",
+    "editor-versions.js": "text/javascript; charset=utf-8",
+    "editor-data.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _POLL_SECONDS = 0.25
@@ -182,6 +186,14 @@ class _Handler(BaseHTTPRequestHandler):
             elif parts == ["api", "flows"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.list())
             elif (
+                len(parts) in (4, 5, 6)
+                and parts[:2] == ["api", "flows"]
+                and parts[3] == "versions"
+                and parts[5:] in ([], ["diff"])
+                and self.server.workspace is not None
+            ):
+                self._versions(parts[2], parts[4] if len(parts) > 4 else None, len(parts) == 6)
+            elif (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
                 and self.server.workspace is not None
@@ -231,6 +243,30 @@ class _Handler(BaseHTTPRequestHandler):
                     controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
                 self._send_json(document, HTTPStatus.CREATED)
                 return
+            if parts == ["api", "layout"] and self.server.workspace is not None:
+                graph = self._control_body(_MAX_FLOW_BODY).get("graph")
+                tasks = graph.get("tasks") if isinstance(graph, dict) else None
+                if not isinstance(tasks, dict) or not all(
+                    isinstance(t, dict) for t in tasks.values()
+                ):
+                    raise ControlError(
+                        'graph should be {"tasks": {name: {"after": [...]}}}',
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                self._send_json(layered_layout({"tasks": tasks}))
+                return
+            if parts == ["api", "flows", "restore"] and self.server.workspace is not None:
+                body = self._control_body()
+                try:
+                    result = self.server.workspace.restore(
+                        _text(body, "name"), _text(body, "version")
+                    )
+                except (FileNotFoundError, WorkspaceError):
+                    raise ControlError("no such version", HTTPStatus.NOT_FOUND) from None
+                self._send_json(
+                    result, HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST
+                )
+                return
             if (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
@@ -245,7 +281,10 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.server.workspace.test(name, body["flow"]))
                     return
                 if parts[2] == "save":
-                    result = self.server.workspace.save(name, body["flow"])
+                    message = body.get("message", "")
+                    result = self.server.workspace.save(
+                        name, body["flow"], message=message if isinstance(message, str) else ""
+                    )
                     if result["valid"] and controller is not None:
                         controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
                 else:
@@ -339,6 +378,19 @@ class _Handler(BaseHTTPRequestHandler):
         return body
 
     # --------------------------------------------------------------- replies
+    def _versions(self, name: str, vid: str | None, diff: bool) -> None:
+        workspace = self.server.workspace
+        assert workspace is not None
+        try:
+            if vid is None:
+                self._send_json(workspace.versions(name))
+            elif diff:
+                self._send_json(workspace.diff(name, vid))
+            else:
+                self._send_json(workspace.version(name, vid))
+        except (FileNotFoundError, WorkspaceError):
+            self._send_error(HTTPStatus.NOT_FOUND, "no such flow or version")
+
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)

@@ -154,6 +154,7 @@ class Scheduler:
         listeners: Iterable[Listener] = (),
         rng: random.Random | None = None,
         signatures: Mapping[str, str | None] | None = None,
+        config_signatures: Mapping[str, str] | None = None,
     ) -> None:
         if async_limit < 1:
             raise ValueError("async_limit must be >= 1")
@@ -167,6 +168,8 @@ class Scheduler:
         self._rank = dag.critical_path_lengths(weight)
         self._rng = rng
         self.signatures = dict(signatures) if signatures is not None else None
+        # Settings-only identities, recorded for the editor's "changed since this run".
+        self.config_signatures = dict(config_signatures) if config_signatures is not None else None
 
     # ------------------------------------------------------------------ public
     def run(self, resume_from: str | None = None) -> RunResult:
@@ -178,7 +181,12 @@ class Scheduler:
         owned = self._router_arg is None
         self.router = self._router_arg or ExecutorRouter()
         self._reset()
-        self.run_id = self.store.create_run(self.flow, self.dag, signatures=self.signatures)
+        self.run_id = self.store.create_run(
+            self.flow,
+            self.dag,
+            signatures=self.signatures,
+            config_signatures=self.config_signatures,
+        )
         status = "SUCCESS"
         try:
             if resume_from is not None:

@@ -6,6 +6,10 @@ const Studio = {
   subflows: new Map(), environments: [],
   connecting: null, problems: [], dirty: false, visible: false,
   testIndex: 0,
+  multi: new Set(),          // extra selected steps (Shift-click or Shift-drag)
+  clipboard: null,           // copied steps as JSON text
+  runData: null,             // run shown on the canvas: {run, graph, tasks}
+  signatures: {},            // current step signatures from the last validation
 };
 
 function studioMessage(message, error = false) {
@@ -20,7 +24,7 @@ function studioShow(show) {
   document.getElementById("studio").hidden = !show;
   document.getElementById("view-editor").hidden = show;
   document.getElementById("view-runs").hidden = !show;
-  if (show) studioRender();
+  if (show) { studioRender(); studioLoadRuns(); studioScheduleCheck(); }
   else loadRuns();
 }
 
@@ -50,8 +54,11 @@ async function studioOpen(name) {
     Studio.testIndex = 0;
     Studio.problems = [];
     Studio.dirty = false;
+    studioHistoryReset();
     document.getElementById("studio-name").value = name;
     studioShow(true);
+    studioFit();
+    studioLoadVersions();
     studioMessage(`Editing ${name}. Select a node or add a block.`);
   } catch (error) { studioMessage(String(error), true); }
 }
@@ -63,6 +70,7 @@ function studioNew() {
   Studio.selected = null;
   Studio.testIndex = 0;
   Studio.problems = [];
+  studioHistoryReset();
   Studio.dirty = true;
   document.getElementById("studio-name").value = Studio.name;
   studioShow(true);
@@ -79,6 +87,7 @@ async function studioUseTemplate() {
   try {
     Studio.flow = await studioApi("/api/flows/template", { template, name });
     Studio.name = name; Studio.selected = null; Studio.problems = []; Studio.dirty = false;
+    studioHistoryReset();
     document.getElementById("studio-name").value = name;
     await studioList(); await loadControl();
     const subflows = await studioApi("/api/subflows");
@@ -107,7 +116,7 @@ function studioAdd(blockName) {
     position: { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 },
   };
   Studio.selected = name;
-  Studio.dirty = true;
+  studioCommit();
   studioRender();
   studioMessage(`${name} added. Configure it in the settings panel.`);
 }
@@ -152,7 +161,7 @@ function studioAddFlow(flowName) {
       Object.hasOwn(spec, "default")).map(([key, spec]) => [key, spec.default])),
     position: { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 },
   };
-  Studio.selected = name; Studio.dirty = true; studioRender();
+  Studio.selected = name; studioCommit(); studioRender();
   studioMessage(`${name} added as a reusable flow.`);
 }
 
@@ -194,7 +203,7 @@ function studioConnect(target) {
   const after = Studio.flow.steps[target].after || [];
   if (!after.includes(source)) after.push(source);
   Studio.flow.steps[target].after = after;
-  Studio.dirty = true;
+  studioCommit();
   studioRender();
   studioMessage(`${source} now runs before ${target}.`);
 }
@@ -208,7 +217,8 @@ function studioRender() {
   host.replaceChildren(...names.map((name) => {
     const step = Studio.flow.steps[name], pos = positions[name];
     const node = document.createElement("div");
-    node.className = "studio-node" + (Studio.selected === name ? " selected" : "")
+    node.dataset.step = name;
+    node.className = "studio-node" + (studioSelection().includes(name) ? " selected" : "")
       + (Studio.problems.some((p) => p.includes(`step '${name}'`)) ? " invalid" : "")
       + (Studio.connecting === name ? " connecting" : "");
     node.style.left = `${pos.x}px`; node.style.top = `${pos.y}px`;
@@ -222,22 +232,25 @@ function studioRender() {
     output.type = "button"; output.title = "Connect to another block"; output.textContent = "+";
     output.onclick = (event) => { event.stopPropagation(); Studio.connecting = name; studioRender(); studioMessage(`Select the input port of the block after ${name}.`); };
     node.append(input, title, kind, output);
-    node.onclick = () => { Studio.selected = name; studioRender(); };
+    node.onclick = (event) => studioToggleSelect(name, event.shiftKey);
     node.onpointerdown = (event) => {
       if (event.target instanceof HTMLButtonElement) return;
       const startX = event.clientX, startY = event.clientY, initial = { ...pos };
+      let moved = false;
       node.setPointerCapture(event.pointerId);
       node.onpointermove = (move) => {
         if (!node.hasPointerCapture(move.pointerId)) return;
-        step.position = { x: Math.max(10, initial.x + move.clientX - startX), y: Math.max(10, initial.y + move.clientY - startY) };
+        const zoom = typeof StudioView === "object" ? StudioView.zoom : 1;
+        step.position = { x: Math.max(10, initial.x + (move.clientX - startX) / zoom), y: Math.max(10, initial.y + (move.clientY - startY) / zoom) };
         node.style.left = `${step.position.x}px`; node.style.top = `${step.position.y}px`;
-        positions[name] = step.position; studioWires(positions); Studio.dirty = true;
+        positions[name] = step.position; studioWires(positions); moved = true;
       };
-      node.onpointerup = () => { node.onpointermove = null; };
+      node.onpointerup = () => { node.onpointermove = null; if (moved) studioCommit(); };
     };
     return node;
   }));
   studioWires(positions);
+  studioDecorate(positions);
   studioInspector();
   studioRenderTests();
   studioRenderSchedules();
@@ -274,7 +287,7 @@ function studioRenderParams() {
   description.value = Studio.flow.description || "";
   description.placeholder = "What does this workflow do?";
   description.setAttribute("aria-label", "Flow description");
-  description.onchange = () => { Studio.flow.description = description.value; Studio.dirty = true; };
+  description.onchange = () => { Studio.flow.description = description.value; studioCommit(); };
   const rows = Object.entries(params).map(([key, spec]) => {
     const row = document.createElement("div"); row.className = "studio-param-row";
     const name = document.createElement("input"); name.value = key;
@@ -287,27 +300,27 @@ function studioRenderParams() {
       }
       if (next !== key) {
         params[next] = spec; delete params[key]; studioRenameParamReferences(key, next);
-        Studio.dirty = true; studioRender();
+        studioCommit(); studioRender();
       }
     };
     const type = document.createElement("select"); type.setAttribute("aria-label", `Parameter ${key} type`);
     type.append(...["str", "int", "float", "bool", "list", "dict"].map((value) => new Option(value, value)));
     type.value = spec.type || "str";
-    type.onchange = () => { spec.type = type.value; spec.default = studioParamDefault(type.value); Studio.dirty = true; studioRenderParams(); };
+    type.onchange = () => { spec.type = type.value; spec.default = studioParamDefault(type.value); studioCommit(); studioRenderParams(); };
     const enabled = document.createElement("input"); enabled.type = "checkbox";
     enabled.checked = Object.hasOwn(spec, "default");
     enabled.setAttribute("aria-label", `Parameter ${key} has default`);
     enabled.onchange = () => {
       if (enabled.checked) spec.default = studioParamDefault(spec.type || "str");
       else delete spec.default;
-      Studio.dirty = true; studioRenderParams();
+      studioCommit(); studioRenderParams();
     };
     let value;
     if (spec.type === "bool") {
       value = document.createElement("select");
       value.append(new Option("false", "false"), new Option("true", "true"));
       value.value = String(spec.default ?? false);
-      value.onchange = () => { spec.default = value.value === "true"; Studio.dirty = true; };
+      value.onchange = () => { spec.default = value.value === "true"; studioCommit(); };
     } else {
       value = spec.type === "list" || spec.type === "dict"
         ? document.createElement("textarea") : document.createElement("input");
@@ -319,17 +332,17 @@ function studioRenderParams() {
         const raw = value.value;
         const parsed = spec.type === "int" || spec.type === "float" ? Number(raw)
           : spec.type === "list" || spec.type === "dict" ? studioTestValue(raw) : raw;
-        spec.default = parsed; Studio.dirty = true;
+        spec.default = parsed; studioCommit();
       };
     }
     value.disabled = !enabled.checked;
     value.setAttribute("aria-label", `Parameter ${key} default`);
     const help = document.createElement("input"); help.value = spec.help || "";
     help.placeholder = "Help text"; help.setAttribute("aria-label", `Parameter ${key} help`);
-    help.onchange = () => { spec.help = help.value; Studio.dirty = true; };
+    help.onchange = () => { spec.help = help.value; studioCommit(); };
     const remove = document.createElement("button"); remove.type = "button";
     remove.className = "btn danger"; remove.textContent = "Remove";
-    remove.onclick = () => { delete params[key]; Studio.dirty = true; studioRenderParams(); };
+    remove.onclick = () => { delete params[key]; studioCommit(); studioRenderParams(); };
     row.append(name, type, enabled, value, help, remove);
     return row;
   });
@@ -339,7 +352,7 @@ function studioRenderParams() {
     let number = 1;
     while (Object.hasOwn(params, `parameter_${number}`)) number++;
     params[`parameter_${number}`] = { type: "str", default: "" };
-    Studio.dirty = true; studioRenderParams();
+    studioCommit(); studioRenderParams();
   };
   host.replaceChildren(description, ...rows, add);
 }
@@ -351,7 +364,7 @@ function studioRenderSchedules() {
     const row = document.createElement("div"); row.className = "studio-test-row";
     const name = document.createElement("input"); name.value = schedule.name;
     name.setAttribute("aria-label", `Schedule ${index + 1} name`);
-    name.onchange = () => { schedule.name = name.value.trim(); Studio.dirty = true; };
+    name.onchange = () => { schedule.name = name.value.trim(); studioCommit(); };
     const type = document.createElement("select"); type.setAttribute("aria-label", `Schedule ${index + 1} type`);
     type.append(new Option("Every N seconds", "interval_seconds"), new Option("Daily at local time", "daily"));
     type.value = schedule.daily !== undefined ? "daily" : "interval_seconds";
@@ -359,7 +372,7 @@ function studioRenderSchedules() {
       delete schedule.daily; delete schedule.interval_seconds;
       if (type.value === "daily") schedule.daily = "09:00";
       else schedule.interval_seconds = 60;
-      Studio.dirty = true; studioRenderSchedules();
+      studioCommit(); studioRenderSchedules();
     };
     const value = document.createElement("input");
     value.setAttribute("aria-label", `Schedule ${index + 1} value`);
@@ -369,11 +382,11 @@ function studioRenderSchedules() {
     value.onchange = () => {
       if (type.value === "daily") schedule.daily = value.value;
       else schedule.interval_seconds = Number(value.value);
-      Studio.dirty = true;
+      studioCommit();
     };
     const remove = document.createElement("button"); remove.className = "btn danger";
     remove.type = "button"; remove.textContent = "Remove";
-    remove.onclick = () => { schedules.splice(index, 1); Studio.dirty = true; studioRenderSchedules(); };
+    remove.onclick = () => { schedules.splice(index, 1); studioCommit(); studioRenderSchedules(); };
     row.append(name, type, value, remove);
     return row;
   });
@@ -383,7 +396,7 @@ function studioRenderSchedules() {
     let number = schedules.length + 1;
     while (schedules.some((item) => item.name === `schedule_${number}`)) number++;
     schedules.push({ name: `schedule_${number}`, interval_seconds: 60 });
-    Studio.dirty = true; studioRenderSchedules();
+    studioCommit(); studioRenderSchedules();
   };
   host.replaceChildren(...rows, add);
 }
@@ -406,15 +419,15 @@ function studioTestRows(caseData, key) {
     picker.append(...names.map((name) => new Option(name, name)));
     picker.value = step;
     picker.onchange = () => {
-      if (picker.value !== step) { values[picker.value] = values[step]; delete values[step]; Studio.dirty = true; studioRenderTests(); }
+      if (picker.value !== step) { values[picker.value] = values[step]; delete values[step]; studioCommit(); studioRenderTests(); }
     };
     const field = document.createElement("textarea");
     field.setAttribute("aria-label", `${key} value for ${step}`);
     field.value = JSON.stringify(value, null, 2);
-    field.onchange = () => { values[step] = studioTestValue(field.value); Studio.dirty = true; };
+    field.onchange = () => { values[step] = studioTestValue(field.value); studioCommit(); };
     const remove = document.createElement("button"); remove.type = "button";
     remove.className = "btn"; remove.textContent = "Remove";
-    remove.onclick = () => { delete values[step]; Studio.dirty = true; studioRenderTests(); };
+    remove.onclick = () => { delete values[step]; studioCommit(); studioRenderTests(); };
     row.append(picker, field, remove); group.append(row);
   }
   const add = document.createElement("button"); add.type = "button";
@@ -422,7 +435,7 @@ function studioTestRows(caseData, key) {
   add.onclick = () => {
     const next = names.find((name) => !Object.hasOwn(values, name));
     if (!next) { studioMessage("Add a step to the canvas first.", true); return; }
-    values[next] = null; Studio.dirty = true; studioRenderTests();
+    values[next] = null; studioCommit(); studioRenderTests();
   };
   group.append(add);
   return group;
@@ -439,7 +452,7 @@ function studioRenderTests() {
   const add = document.createElement("button"); add.type = "button"; add.className = "btn"; add.textContent = "New test case";
   add.onclick = () => {
     cases.push({ name: `case ${cases.length + 1}`, inputs: {}, expect: {} });
-    Studio.testIndex = cases.length - 1; Studio.dirty = true;
+    Studio.testIndex = cases.length - 1; studioCommit();
     document.getElementById("studio-test-panel").open = true;
     studioRenderTests();
   };
@@ -449,10 +462,10 @@ function studioRenderTests() {
   const label = document.createElement("label"); label.textContent = "Test name ";
   const name = document.createElement("input"); name.value = current.name;
   name.setAttribute("aria-label", "Test name");
-  name.onchange = () => { current.name = name.value; Studio.dirty = true; studioRenderTests(); };
+  name.onchange = () => { current.name = name.value; studioCommit(); studioRenderTests(); };
   label.append(name); toolbar.append(label);
   const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn danger"; remove.textContent = "Delete test";
-  remove.onclick = () => { cases.splice(Studio.testIndex, 1); Studio.testIndex = 0; Studio.dirty = true; studioRenderTests(); };
+  remove.onclick = () => { cases.splice(Studio.testIndex, 1); Studio.testIndex = 0; studioCommit(); studioRenderTests(); };
   toolbar.append(remove);
   host.replaceChildren(toolbar, studioTestRows(current, "inputs"), studioTestRows(current, "expect"));
 }
@@ -509,7 +522,7 @@ function studioInspector() {
     }
     field.value = typeof value === "string" ? value : JSON.stringify(value);
     field.placeholder = setting.secret ? "{{ env.NAME }}" : "";
-    field.onchange = () => { step.settings[setting.name] = studioValue(field.value, setting.types); Studio.dirty = true; };
+    field.onchange = () => { step.settings[setting.name] = studioValue(field.value, setting.types); studioCommit(); };
     label.append(field);
     if (!(field instanceof HTMLSelectElement)) {
       const source = document.createElement("select");
@@ -522,7 +535,7 @@ function studioInspector() {
         if (!source.value) return;
         field.value = source.value;
         step.settings[setting.name] = source.value;
-        Studio.dirty = true;
+        studioCommit();
       };
       label.append(source);
     }
@@ -533,7 +546,7 @@ function studioInspector() {
   const picker = document.createElement("select");
   picker.append(new Option("Add dependency…", ""), ...Object.keys(Studio.flow.steps)
     .filter((other) => other !== name && !(step.after || []).includes(other)).map((other) => new Option(other, other)));
-  picker.onchange = () => { if (picker.value) { (step.after ||= []).push(picker.value); Studio.dirty = true; studioRender(); } };
+  picker.onchange = () => { if (picker.value) { (step.after ||= []).push(picker.value); studioCommit(); studioRender(); } };
   after.append(picker); form.append(after);
   if (step.after?.length) {
     const list = document.createElement("p"); list.className = "hint";
@@ -542,27 +555,35 @@ function studioInspector() {
   const note = document.createElement("label"); note.textContent = "Annotation";
   const noteField = document.createElement("textarea");
   noteField.value = step.note || ""; noteField.placeholder = "Explain this step for teammates";
-  noteField.onchange = () => { step.note = noteField.value; Studio.dirty = true; };
+  noteField.onchange = () => { step.note = noteField.value; studioCommit(); };
   note.append(noteField); form.append(note);
   const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn danger"; remove.textContent = "Delete block";
   remove.onclick = () => {
     delete Studio.flow.steps[name];
     for (const other of Object.values(Studio.flow.steps)) other.after = (other.after || []).filter((dep) => dep !== name);
-    Studio.selected = null; Studio.dirty = true; studioRender();
+    Studio.selected = null; studioCommit(); studioRender();
   };
-  form.append(remove); host.replaceChildren(form);
+  form.append(remove);
+  const result = studioRunSection(name);
+  host.replaceChildren(...(result ? [result, form] : [form]));
 }
 
 async function studioValidate(save = false) {
   Studio.name = document.getElementById("studio-name").value.trim();
   try {
-    const result = await studioApi(`/api/flows/${save ? "save" : "validate"}`, { name: Studio.name, flow: Studio.flow });
+    const message = document.getElementById("studio-save-message");
+    const result = await studioApi(`/api/flows/${save ? "save" : "validate"}`, {
+      name: Studio.name, flow: Studio.flow, ...(save && message?.value ? { message: message.value } : {}),
+    });
     Studio.problems = result.problems || [];
+    Studio.signatures = result.signatures || Studio.signatures;
     studioRender();
     studioMessage(result.valid ? (save ? `Saved ${Studio.name}.json` : "Workflow is valid.")
       : Studio.problems.join("\n"), !result.valid);
     if (save && result.valid) {
       Studio.dirty = false; await studioList(); await loadControl();
+      if (message) message.value = "";
+      studioLoadVersions();
       const subflows = await studioApi("/api/subflows");
       Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
       studioPalette();
@@ -622,6 +643,21 @@ async function studioInit() {
     document.getElementById("studio-save").onclick = () => studioValidate(true);
     document.getElementById("studio-run").onclick = studioRun;
     document.getElementById("studio-partial").onclick = studioPartial;
+    document.getElementById("studio-undo").onclick = () => studioUndoRedo(-1);
+    document.getElementById("studio-redo").onclick = () => studioUndoRedo(1);
+    document.getElementById("studio-copy").onclick = studioCopy;
+    document.getElementById("studio-paste").onclick = studioPaste;
+    document.getElementById("studio-duplicate").onclick = studioDuplicate;
+    document.getElementById("studio-tidy").onclick = studioTidy;
+    document.getElementById("studio-zoom-in").onclick = () => studioZoomButton(1.25);
+    document.getElementById("studio-zoom-out").onclick = () => studioZoomButton(0.8);
+    document.getElementById("studio-fit").onclick = studioFit;
+    document.getElementById("studio-run-data").onchange = () => studioLoadRuns();
+    document.getElementById("studio-history-panel").ontoggle = (event) => {
+      if (event.target.open) studioLoadVersions();
+    };
+    studioViewInit();
+    studioHistoryReset();
     if (location.hash === "#editor") studioShow(true);
   } catch { /* read-only dashboard has no editor */ }
 }

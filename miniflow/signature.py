@@ -1,4 +1,13 @@
-"""Conservative identities for JSON-flow steps used by partial-run reuse."""
+"""Identities of JSON-flow steps.
+
+:func:`step_signature` is the conservative identity used by partial-run reuse: it also
+covers the contents of the files a step reads or writes, and is ``None`` when a path
+is only known at run time (the step then always reruns).
+
+:func:`config_signature` covers the same code, settings, parameters and environment
+but not file contents, and is never ``None``. Runs record it so the editor can show
+which steps changed since a run; a step's own output file doesn't count as a change.
+"""
 
 from __future__ import annotations
 
@@ -47,6 +56,17 @@ def step_signature(step: Task) -> str | None:
     A missing or unreadable input fails closed by changing the identity. Upstream
     results are checked separately: a step is reusable only if all parents reused.
     """
+    return _identity(step, files=True)
+
+
+def config_signature(step: Task) -> str:
+    """Like :func:`step_signature`, without file contents; never ``None``."""
+    identity = _identity(step, files=False)
+    assert identity is not None
+    return identity
+
+
+def _identity(step: Task, *, files: bool) -> str | None:
     kwargs = dict(step.kwargs)
     if "params" in kwargs:
         used = _references({k: v for k, v in kwargs.items() if k != "params"}, _PARAM_REF)
@@ -72,6 +92,8 @@ def step_signature(step: Task) -> str | None:
         base = Path(kwargs.get("base_dir", "."))
         for setting in spec.settings:
             raw = settings.get(setting.name)
+            if not files:
+                continue
             if setting.file and isinstance(raw, str) and "{{" in raw:
                 return None  # resolved paths depend on live values; rerun the step
             if setting.file and isinstance(raw, str) and "{{" not in raw:

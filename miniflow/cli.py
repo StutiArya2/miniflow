@@ -25,7 +25,7 @@ from miniflow.flowtest import run_flow_tests
 from miniflow.graph import DAG, GraphError
 from miniflow.retry import RetryPolicy
 from miniflow.scheduler import Event, RunResult, Scheduler
-from miniflow.signature import step_signature
+from miniflow.signature import config_signature, step_signature
 from miniflow.states import State
 from miniflow.store import StateStore
 from miniflow.ui.server import DashboardServer
@@ -343,6 +343,9 @@ def _execute_with(
             flow=flow,
             listeners=[reporter] if reporter else [],
             signatures={name: step_signature(step) for name, step in dag.tasks.items()}
+            if spec is not None
+            else None,
+            config_signatures={name: config_signature(step) for name, step in dag.tasks.items()}
             if spec is not None
             else None,
         )

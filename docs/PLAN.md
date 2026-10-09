@@ -145,6 +145,16 @@ Roadmap and research: `docs/superpowers/specs/2026-10-08-v1-roadmap.md`; design:
 - `filter` conditions are parsed with `ast` and evaluated by walking the tree (no `eval`), with a whitelist of operators and functions.
 - `on_failure` runs in the CLI after a FAILED run (so also for dashboard runs), not as a DAG step.
 
+### V2: Editor 2.0
+Design: `docs/superpowers/specs/2026-10-09-v2-editor-design.md`.
+
+**Status: ✅ done.** Undo/redo and copy/paste, zoom/pan/fit and Tidy up, version history with
+diff and restore, run data on the canvas. Notes:
+- Undo is snapshot-based: every editor change calls `studioCommit()`, which records the flow as JSON text (100 steps). Dragging records once on release; settings record once when the field loses focus.
+- The browser code is split into `editor-history.js`, `editor-view.js`, `editor-versions.js` and `editor-data.js` next to `editor.js`, plain scripts with no build step. Global names must not clash with `app.js` (an early `NODE_W` clash made the browser drop a whole file).
+- History lives in `.history/<flow>/<id>.json` (gitignored). A save message belongs to the version it was saved with: `current.meta` holds it until the version is replaced.
+- "Changed since this run" uses a new settings-only `config_signature` recorded with each run (an optional scheduler/store parameter like V1's `signatures`). The strict `step_signature` includes file contents, so a step writing its own output file always looked changed.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.

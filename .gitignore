@@ -29,3 +29,6 @@ miniflow_reports/
 .superdesign/init/
 .superdesign/resume.json
 .playwright-cli/
+
+# editor version history (local)
+.history/

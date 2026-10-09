@@ -219,7 +219,12 @@ class StateStore:
 
     # ------------------------------------------------------------------ writes
     def create_run(
-        self, flow: str, dag: DAG, *, signatures: dict[str, str | None] | None = None
+        self,
+        flow: str,
+        dag: DAG,
+        *,
+        signatures: dict[str, str | None] | None = None,
+        config_signatures: dict[str, str] | None = None,
     ) -> str:
         """Start a new run: every task PENDING and the graph saved as JSON."""
         run_id = uuid.uuid4().hex[:12]
@@ -232,6 +237,11 @@ class StateStore:
                     "description": dag.tasks[name].description,
                     "optional": dag.tasks[name].optional,
                     **({"signature": signatures.get(name)} if signatures is not None else {}),
+                    **(
+                        {"config_signature": config_signatures.get(name)}
+                        if config_signatures is not None
+                        else {}
+                    ),
                 }
                 for name in order
             },
