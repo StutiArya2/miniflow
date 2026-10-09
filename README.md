@@ -120,6 +120,8 @@ in the run graph.
 - **Undo and redo** for every change (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z), and **copy, paste and
   duplicate** (Ctrl/Cmd+C, V, D). Shift-click or Shift-drag selects several steps; pasted
   steps get new names and their references to each other follow. Delete removes the selection.
+- **Drag and drop** blocks (and reusable flows) from the palette onto the canvas; the step lands
+  where you drop it, at any zoom. Clicking a block still adds it too.
 - **Zoom and pan**: mouse wheel, drag empty space, −/+/**Fit**; **Tidy up** arranges the steps
   by dependency with the same layout as the run graph. Zooming doesn't change saved positions.
 - **History**: every save keeps the version it replaces in `.history/<flow>/` next to the flow,

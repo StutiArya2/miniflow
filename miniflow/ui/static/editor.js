@@ -104,7 +104,14 @@ function studioDefault(setting) {
     : kind === "int" || kind === "float" ? 0 : "";
 }
 
-function studioAdd(blockName) {
+/* Where a new step goes: at `at` (canvas coordinates, from a drop) or in the next grid slot. */
+function studioSlot(at, count) {
+  return at
+    ? { x: Math.max(10, Math.round(at.x)), y: Math.max(10, Math.round(at.y)) }
+    : { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 };
+}
+
+function studioAdd(blockName, at) {
   const spec = Studio.blocks.get(blockName);
   if (!spec) return;
   let name = blockName.replace(/[^A-Za-z0-9_]/g, "_");
@@ -113,9 +120,10 @@ function studioAdd(blockName) {
   const count = Object.keys(Studio.flow.steps).length;
   Studio.flow.steps[name] = {
     block: blockName, settings: Object.fromEntries(spec.settings.map((s) => [s.name, studioDefault(s)])),
-    position: { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 },
+    position: studioSlot(at, count),
   };
   Studio.selected = name;
+  Studio.multi = new Set();
   studioCommit();
   studioRender();
   studioMessage(`${name} added. Configure it in the settings panel.`);
@@ -135,6 +143,7 @@ function studioPalette() {
     small.textContent = `${b.kind} · ${b.description}`;
     button.append(small);
     button.onclick = () => studioAdd(b.name);
+    studioDraggable(button, "block", b.name);
     return button;
   }));
   document.getElementById("studio-subflows").replaceChildren(...[...Studio.subflows.values()]
@@ -144,11 +153,12 @@ function studioPalette() {
       button.type = "button"; button.textContent = flow.name;
       const small = document.createElement("small"); small.textContent = flow.description || "Reusable workflow";
       button.append(small); button.onclick = () => studioAddFlow(flow.name);
+      studioDraggable(button, "flow", flow.name);
       return button;
     }));
 }
 
-function studioAddFlow(flowName) {
+function studioAddFlow(flowName, at) {
   const flow = Studio.subflows.get(flowName);
   if (!flow) return;
   let name = flowName.replace(/[^A-Za-z0-9_]/g, "_");
@@ -159,9 +169,9 @@ function studioAddFlow(flowName) {
     flow: `${flowName}.json`,
     settings: Object.fromEntries(Object.entries(flow.params || {}).filter(([, spec]) =>
       Object.hasOwn(spec, "default")).map(([key, spec]) => [key, spec.default])),
-    position: { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 },
+    position: studioSlot(at, count),
   };
-  Studio.selected = name; studioCommit(); studioRender();
+  Studio.selected = name; Studio.multi = new Set(); studioCommit(); studioRender();
   studioMessage(`${name} added as a reusable flow.`);
 }
 

@@ -221,3 +221,24 @@ def test_runs_record_the_editor_signatures(tmp_path: Path):
         graph = store.get_graph(store.latest_run("demo"))
     expected = FlowWorkspace(tmp_path).validate("demo", flow)["signatures"]["save"]
     assert graph["tasks"]["save"]["config_signature"] == expected
+
+
+def test_editor_scripts_support_palette_drag_and_drop(tmp_path: Path):
+    """The palette hands blocks to the canvas through the browser's drag-and-drop."""
+    import http.client
+    from urllib.parse import urlsplit
+
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        url = urlsplit(server.url)
+
+        def get(path: str) -> str:
+            conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+            conn.request("GET", path)
+            body = conn.getresponse().read().decode()
+            conn.close()
+            return body
+
+        editor, view = get("/static/editor.js"), get("/static/editor-view.js")
+    assert "studioDraggable(button" in editor  # blocks and reusable flows are draggable
+    assert "studioDropInit(host)" in view  # the canvas accepts drops
+    assert 'addEventListener("drop"' in view

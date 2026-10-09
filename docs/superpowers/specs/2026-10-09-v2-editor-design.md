@@ -8,6 +8,7 @@ Status: built. Builds on the V1 editor (`miniflow/ui/static/editor.js`, `miniflo
 |---|---|
 | Undo / redo | Every change is undoable (add, delete, move, connect, settings, rename, paste, tidy, restore); 100 steps; Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y |
 | Selection, copy, paste | Click, Shift-click, Shift-drag a box; Ctrl/Cmd+C/V/D; Delete; Esc clears. Pasted steps get unique names; `{{ step }}` references and `after` among pasted steps follow the renames |
+| Drag and drop | Palette blocks and reusable flows are draggable (HTML5 drag and drop); dropping on the canvas adds the step centred on the pointer, using the zoom/pan transform; clicking still adds at the next free slot |
 | Zoom and pan | Wheel zooms at the pointer (25–200 %), drag empty space pans, −/+/Fit buttons; a CSS transform, so saved positions don't change |
 | Tidy up | `POST /api/layout` returns columns and rows from `ui/layout.py` (the run graph's layout); undoable |
 | Version history | Each save keeps the replaced version in `.history/<flow>/<id>.json` with time, OS account and optional note; list, diff against the current file, restore |

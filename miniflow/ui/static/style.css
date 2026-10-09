@@ -376,3 +376,6 @@ body.studio-active #app > :not(#studio) { display: none !important; }
 .studio-diff p { margin: 2px 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .studio-diff .added { color: var(--success-ink); }
 .studio-diff .removed { color: var(--failed-ink); }
+.studio-block[draggable="true"] { cursor: grab; }
+.studio-block[draggable="true"]:active { cursor: grabbing; }
+.studio-canvas-scroll.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; }

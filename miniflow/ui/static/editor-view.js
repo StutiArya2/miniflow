@@ -79,6 +79,43 @@ async function studioTidy() {
   } catch (error) { studioMessage(String(error), true); }
 }
 
+/* ---------------------------------------------------------- drag and drop */
+const STUDIO_DRAG = "application/x-miniflow-block";
+
+/* Make a palette button draggable onto the canvas (clicking it still adds it). */
+function studioDraggable(button, kind, name) {
+  button.draggable = true;
+  button.title = "Drag onto the canvas, or click to add";
+  button.ondragstart = (event) => {
+    event.dataTransfer.setData(STUDIO_DRAG, JSON.stringify({ kind, name }));
+    event.dataTransfer.setData("text/plain", name);
+    event.dataTransfer.effectAllowed = "copy";
+  };
+}
+
+function studioDropInit(host) {
+  host.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer?.types.includes(STUDIO_DRAG)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    host.classList.add("dropping");
+  });
+  host.addEventListener("dragleave", (event) => {
+    if (!host.contains(event.relatedTarget)) host.classList.remove("dropping");
+  });
+  host.addEventListener("drop", (event) => {
+    host.classList.remove("dropping");
+    let item;
+    try { item = JSON.parse(event.dataTransfer.getData(STUDIO_DRAG)); } catch { return; }
+    event.preventDefault();
+    const p = studioCanvasPoint(event);
+    const at = { x: p.x - STUDIO_NODE_W / 2, y: p.y - STUDIO_NODE_H / 2 };  // centre the step on the pointer
+    if (item.kind === "flow") studioAddFlow(item.name, at);
+    else studioAdd(item.name, at);
+    studioMessage(`${Studio.selected} added where you dropped it.`);
+  });
+}
+
 /* --------------------------------------------------------------- pointer */
 function studioBackground(target) {
   return target.id === "studio-canvas" || target.id === "studio-nodes" || target.closest?.("#studio-wires")
@@ -87,6 +124,7 @@ function studioBackground(target) {
 
 function studioViewInit() {
   const host = document.querySelector(".studio-canvas-scroll");
+  studioDropInit(host);
   host.addEventListener("wheel", (event) => {
     if (!Studio.visible) return;
     event.preventDefault();
