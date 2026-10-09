@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import csv
 import getpass
+import io
 import json
 import os
 import re
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -222,6 +225,37 @@ class FlowWorkspace:
         if not path.is_file():
             raise FileNotFoundError(path)
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def upload_csv(self, filename: str, content: bytes) -> str:
+        """Store an uploaded CSV beside flows and return its flow-relative path."""
+        if (
+            not filename
+            or len(filename) > 255
+            or "/" in filename
+            or "\\" in filename
+            or "\x00" in filename
+            or not filename.lower().endswith(".csv")
+            or not filename[:-4].strip()
+        ):
+            raise WorkspaceError("choose a CSV file")
+        try:
+            decoded = content.decode("utf-8-sig")
+            header = next(csv.reader(io.StringIO(decoded)), None)
+        except (UnicodeDecodeError, csv.Error):
+            raise WorkspaceError("CSV file must be UTF-8 text") from None
+        if not header or not any(column.strip() for column in header) or "\x00" in decoded:
+            raise WorkspaceError("CSV file needs a header row")
+        uploads = self.folder / "uploads"
+        if uploads.is_symlink():
+            raise WorkspaceError("uploads folder cannot be a symlink")
+        uploads.mkdir(exist_ok=True)
+        if not uploads.is_dir():
+            raise WorkspaceError("uploads path is not a folder")
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", filename[:-4]).strip("._-")[:60]
+        relative = f"uploads/{uuid.uuid4().hex}_{safe_stem or 'file'}.csv"
+        with (self.folder / relative).open("xb") as target:
+            target.write(content)
+        return relative
 
     def validate(self, name: str, document: Any) -> dict[str, Any]:
         path = self._path(name)

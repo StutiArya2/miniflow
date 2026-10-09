@@ -25,6 +25,26 @@ def request(server: DashboardServer, method: str, path: str, body: dict | None =
         conn.close()
 
 
+def upload(server: DashboardServer, filename: str, content: bytes, **headers: str):
+    url = urlsplit(server.url)
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    try:
+        conn.request(
+            "POST",
+            f"/api/flows/upload-csv?name={filename}",
+            body=content,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-MiniFlow-Upload": "csv",
+                **headers,
+            },
+        )
+        response = conn.getresponse()
+        return response.status, json.loads(response.read())
+    finally:
+        conn.close()
+
+
 def test_editor_can_validate_save_and_read_a_flow(tmp_path: Path):
     workspace = tmp_path / "flows"
     workspace.mkdir()
@@ -38,6 +58,44 @@ def test_editor_can_validate_save_and_read_a_flow(tmp_path: Path):
         assert request(server, "GET", "/api/flows") == (200, ["hello"])
         assert request(server, "GET", "/api/flows/hello") == (200, flow)
         assert "hello" in server.controller.status()["flows"]
+
+
+def test_uploaded_csv_can_be_used_by_a_visual_flow(tmp_path: Path):
+    csv_data = b"order_id,amount\n1,250\n2,75\n"
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        status, result = upload(server, "orders.csv", csv_data)
+        assert status == 201
+        path = result["path"]
+        assert path.startswith("uploads/")
+        assert (tmp_path / path).read_bytes() == csv_data
+        flow = {
+            "steps": {
+                "read_csv": {"block": "read_csv", "settings": {"path": path}},
+                "filter": {
+                    "block": "filter",
+                    "settings": {"rows": "{{ read_csv }}", "where": "amount > 100"},
+                },
+                "write_csv": {
+                    "block": "write_csv",
+                    "settings": {"rows": "{{ filter }}", "path": "out/filtered.csv"},
+                },
+            }
+        }
+        assert (
+            request(server, "POST", "/api/flows/save", {"name": "orders", "flow": flow})[0] == 200
+        )
+    assert main(["run", str(tmp_path / "orders.json"), "--quiet"]) == 0
+    assert (tmp_path / "out" / "filtered.csv").read_text(encoding="utf-8") == (
+        "order_id,amount\n1,250\n"
+    )
+
+
+def test_csv_upload_rejects_invalid_files_and_cross_site_requests(tmp_path: Path):
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        assert upload(server, "orders.txt", b"a,b\n1,2\n")[0] == 400
+        assert upload(server, "orders.csv", b"\x00\x01")[0] == 400
+        assert upload(server, "orders.csv", b"a,b\n1,2\n", Origin="https://other.example")[0] == 403
+        assert not (tmp_path / "uploads").exists()
 
 
 def test_invalid_and_escaping_flows_are_not_saved(tmp_path: Path):
