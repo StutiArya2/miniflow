@@ -98,6 +98,9 @@ miniflow ui --flows examples                   # edit, validate, save and run in
 
 Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
 searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+For a `read_csv` block, click **Upload CSV…** beside its path to choose a local file. MiniFlow
+copies it into the flow workspace's `uploads/` folder and fills in the path automatically
+(maximum 10 MB). You can then save and run the flow normally.
 An empty flows folder also has **hello_world** and **sales_report** starters. **Use starter**
 creates a compatible JSON flow and, for the sales report, its sample CSV. Open **Parameters**
 to change defaults without editing JSON; use a setting's **Use value from…** selector to insert
