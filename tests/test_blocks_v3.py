@@ -275,7 +275,7 @@ def test_s3_put_and_get_round_trip_with_signed_requests(fake, tmp_path: Path):
 
     fake.respond = respond
     source = tmp_path / "in.csv"
-    source.write_text("a,b\n1,2\n", encoding="utf-8")
+    source.write_bytes(b"a,b\n1,2\n")
     put = call("s3_put", key="2026/in.csv", path=str(source), endpoint=fake.url, **S3)
     assert put == {"bucket": "reports", "key": "2026/in.csv", "bytes": 8}
     assert store["/reports/2026/in.csv"] == b"a,b\n1,2\n"  # path-style with a custom endpoint
@@ -283,7 +283,7 @@ def test_s3_put_and_get_round_trip_with_signed_requests(fake, tmp_path: Path):
     target = tmp_path / "out" / "copy.csv"
     got = call("s3_get", key="2026/in.csv", path=str(target), endpoint=fake.url, **S3)
     assert got == {"bucket": "reports", "key": "2026/in.csv", "bytes": 8, "path": str(target)}
-    assert target.read_text(encoding="utf-8") == "a,b\n1,2\n"
+    assert target.read_bytes() == b"a,b\n1,2\n"
 
     with pytest.raises(RuntimeError, match="NoSuchKey"):
         call("s3_get", key="missing.csv", path=str(tmp_path / "m.csv"), endpoint=fake.url, **S3)
