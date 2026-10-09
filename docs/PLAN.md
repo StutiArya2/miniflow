@@ -155,6 +155,15 @@ diff and restore, run data on the canvas. Notes:
 - History lives in `.history/<flow>/<id>.json` (gitignored). A save message belongs to the version it was saved with: `current.meta` holds it until the version is replaced.
 - "Changed since this run" uses a new settings-only `config_signature` recorded with each run (an optional scheduler/store parameter like V1's `signatures`). The strict `step_signature` includes file contents, so a step writing its own output file always looked changed.
 
+### V3: smarter flows, running it for real, more blocks
+Milestones: 1 more blocks, 2 running it for real (cron, triggers, queue, retention, alerts),
+3 smarter flows (`for_each`, if/else, per-step failure paths; needs a scheduler extension the team
+should approve first).
+
+**Milestone 1 (more blocks): ✅ done.** 14 new blocks (design: `docs/superpowers/specs/2026-10-09-v3-m1-blocks-design.md`).
+- AWS request signing is checked against the AWS documentation example and was reproduced with `botocore` once; `read_xlsx` refuses XML with a DTD instead of using `defusedxml`.
+- The database blocks import their driver lazily and say how to install it.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.
