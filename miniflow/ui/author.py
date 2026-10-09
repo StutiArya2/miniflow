@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -77,15 +78,15 @@ def flow_diff(old: Any, new: Any) -> dict[str, Any]:
 
 def _user() -> str:
     """The account saving the flow (from the OS, not the possibly-wrong USER variable)."""
-    try:
-        import pwd  # not on Windows
+    if sys.platform != "win32":  # pwd is POSIX-only; the check also lets mypy skip it
+        import pwd
 
-        return pwd.getpwuid(os.getuid()).pw_name
-    except (ImportError, KeyError, AttributeError):  # pragma: no cover - Windows
-        try:
-            return getpass.getuser()
-        except (OSError, KeyError):
-            return "unknown"
+        with contextlib.suppress(KeyError):
+            return pwd.getpwuid(os.getuid()).pw_name
+    try:
+        return getpass.getuser()
+    except (OSError, KeyError):
+        return "unknown"
 
 
 class WorkspaceError(ValueError):
