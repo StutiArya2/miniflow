@@ -151,8 +151,10 @@ run once after the dashboard was off during scheduled times. A file watch such a
 `{"name": "inbox", "watch": "inbox/*.csv"}` starts after a new file stops changing. A webhook
 schedule names an environment variable holding its token; call `/api/hooks/FLOW/NAME` with
 `Authorization: Bearer TOKEN` and a JSON body. Trigger details reach the flow as
-`{{ env.MINIFLOW_TRIGGER }}`. Scheduled and triggered runs wait in a bounded queue while another
-run is active; the dashboard shows queued runs and launch events. `serve` keeps the newest 100
+`{{ env.MINIFLOW_TRIGGER }}`. Manual, scheduled and triggered runs wait in a bounded queue when
+all run slots are busy; the dashboard shows queued runs and launch events. Use
+`--max-concurrent N` to run up to N different flows at once (default 1). A second run of the
+same flow waits so each run stays linked to its own history. `serve` keeps the newest 100
 runs per flow by default; use `--keep-runs N` or `--keep-days D` to choose retention. Keep the
 `serve` process running on the laptop for schedules and file watches to fire.
 

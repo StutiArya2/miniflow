@@ -1,6 +1,6 @@
 # V3 milestone 2: dependable local runs
 
-Status: in progress on `v3-runs`. The design keeps the standard-library core and the
+Status: implemented on `v3-runs`. The design keeps the standard-library core and the
 dashboard bound to `127.0.0.1`.
 
 ## Schedules and triggers
@@ -28,12 +28,14 @@ process still validates the complete flow before execution.
 
 ## Queue and history
 
-Scheduled and triggered launches use a FIFO queue with at most 20 waiting runs.
-Only one launch from the same named source may wait at a time. A person pressing Run
-still gets the existing “still running” response if a run is active. Every queued,
+Manual, scheduled and triggered launches use a queue with at most 20 waiting runs.
+Only one launch from the same named source may wait at a time. With
+`serve --max-concurrent N`, up to N different flows run at once. A second run of the same
+flow waits so the controller can match each child process to its persisted run. The
+oldest waiting run whose flow is free starts when capacity opens; another flow can
+pass a waiting repeat launch. Every queued,
 launched, missed, and failed launch is written to `schedule_events`; the dashboard
-shows the wait and the current queue. The current controller has **one active run
-slot**; configurable parallel run slots remain to be implemented.
+shows the wait and the current queue. The dashboard can cancel a selected active run.
 
 At dashboard startup and after each controlled run, retention removes completed
 runs beyond the newest 100 per flow. `serve --keep-runs N` and `--keep-days D` select
@@ -48,9 +50,9 @@ errors are reported on stderr, as with the existing failure action.
 
 ## Demo and checks
 
-1. Start `miniflow serve --flows DIR --db runs.db --offline` with a short interval
-   flow and a slow manual flow. The interval launch shows as queued, then launches
-   when the manual run completes.
+1. Start `miniflow serve --flows DIR --db runs.db --offline --max-concurrent 2`
+   with three slow flows. Two different flows run together; the third waits and
+   launches when a slot opens. A second run of either active flow also waits.
 2. In Editor, add a cron schedule, a file watch, and a webhook schedule. The
    Schedules panel should show each kind without a fake “Next” time for triggers.
 3. Add a new CSV to the watched folder, wait until it stops changing, and inspect

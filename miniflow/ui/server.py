@@ -333,7 +333,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_json(active, HTTPStatus.ACCEPTED)
             else:
-                controller.cancel()
+                controller.cancel(body.get("run_id"))
                 self._send_json(controller.status())
         except ControlError as exc:
             self._send_error(exc.status, str(exc))
@@ -501,6 +501,7 @@ class DashboardServer(ThreadingHTTPServer):
         schedules: bool = False,
         keep_runs: int | None = 100,
         keep_days: float | None = None,
+        max_concurrent: int = 1,
     ) -> None:
         if str(db) == ":memory:":
             raise ValueError("the dashboard needs a database file, not ':memory:'")
@@ -523,6 +524,7 @@ class DashboardServer(ThreadingHTTPServer):
                     self.store,
                     keep_runs=None if keep_days is not None else keep_runs,
                     keep_days=keep_days,
+                    max_concurrent=max_concurrent,
                 )
             )
             self.schedule_service = (

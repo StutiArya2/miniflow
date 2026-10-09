@@ -145,11 +145,40 @@ def test_trigger_details_reach_the_flow(controller, store):
     assert json.loads(message) == trigger
 
 
-def test_manual_runs_still_say_when_busy(controller):
+def test_manual_runs_join_the_queue_when_busy(controller, store):
     controller.start("hold", 0.0)
-    with pytest.raises(ControlError) as err:
-        controller.start("quick", 0.0)
-    assert err.value.status == HTTPStatus.CONFLICT
+    assert controller.start("quick", 0.0)["queued"] is True
+    wait_idle(controller)
+    assert store.latest_run("quick") is not None
+
+
+def test_two_different_flows_run_at_once_when_capacity_is_two(flows, store):
+    write_flow(flows, "hold_two", HOLD)
+    controller = RunController(flows, store, max_concurrent=2, grace=0.5)
+    try:
+        controller.start("hold", 0.0)
+        controller.start("hold_two", 0.0)
+        assert {item["flow"] for item in controller.status()["running"]} == {"hold", "hold_two"}
+        wait_idle(controller)
+        runs = {run.flow: run for run in store.list_runs()}
+        assert max(runs["hold"].started_at, runs["hold_two"].started_at) < min(
+            runs["hold"].finished_at, runs["hold_two"].finished_at
+        )
+    finally:
+        controller.shutdown()
+
+
+def test_same_flow_waits_while_another_flow_uses_free_slot(flows, store):
+    controller = RunController(flows, store, max_concurrent=2, grace=0.5)
+    try:
+        controller.start("hold", 0.0)
+        assert controller.start("hold", 0.0)["queued"] is True
+        assert controller.start("other", 0.0).get("queued") is None
+        assert [item["flow"] for item in controller.status()["queued"]] == ["hold"]
+        wait_idle(controller)
+        assert len([run for run in store.list_runs() if run.flow == "hold"]) == 2
+    finally:
+        controller.shutdown()
 
 
 # ------------------------------------------------------- scheduled launches

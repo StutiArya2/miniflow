@@ -288,6 +288,7 @@ def _start_dashboard(args: argparse.Namespace) -> DashboardServer:
             else args.keep_runs
         ),
         keep_days=getattr(args, "keep_days", None),
+        max_concurrent=getattr(args, "max_concurrent", 1),
     ).start()
     print(f"dashboard: {server.url}", file=sys.stderr, flush=True)
     if not args.no_browser:
@@ -685,6 +686,10 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
     sv.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
     sv.add_argument("--offline", action="store_true", help="examples use saved data")
+    sv.add_argument(
+        "--max-concurrent", type=int, default=1, metavar="N",
+        help="run up to N different flows at once (default 1)",
+    )  # fmt: skip
     retention = sv.add_mutually_exclusive_group()
     retention.add_argument(
         "--keep-runs", type=int, metavar="N", help="keep the newest N runs per flow (default 100)"
