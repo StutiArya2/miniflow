@@ -3,6 +3,7 @@
 
 const Studio = {
   blocks: new Map(), flow: { steps: {} }, name: "", selected: null,
+  subflows: new Map(), environments: [],
   connecting: null, problems: [], dirty: false, visible: false,
   testIndex: 0,
 };
@@ -68,6 +69,25 @@ function studioNew() {
   studioMessage("Add a block from the palette to begin.");
 }
 
+async function studioUseTemplate() {
+  if (Studio.dirty && !window.confirm("Discard unsaved workflow changes?")) return;
+  const template = document.getElementById("studio-template").value;
+  const existing = [...document.getElementById("studio-flow").options].map((option) => option.value);
+  let name = template;
+  let number = 2;
+  while (existing.includes(name)) name = `${template}_${number++}`;
+  try {
+    Studio.flow = await studioApi("/api/flows/template", { template, name });
+    Studio.name = name; Studio.selected = null; Studio.problems = []; Studio.dirty = false;
+    document.getElementById("studio-name").value = name;
+    await studioList(); await loadControl();
+    const subflows = await studioApi("/api/subflows");
+    Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
+    studioShow(true);
+    studioMessage(`Starter ${name} is ready. Change a parameter or add a block, then run it.`);
+  } catch (error) { studioMessage(String(error), true); }
+}
+
 function studioDefault(setting) {
   if (Object.hasOwn(setting, "default")) return setting.default;
   const kind = setting.types[0];
@@ -108,6 +128,32 @@ function studioPalette() {
     button.onclick = () => studioAdd(b.name);
     return button;
   }));
+  document.getElementById("studio-subflows").replaceChildren(...[...Studio.subflows.values()]
+    .filter((flow) => flow.name !== Studio.name && `${flow.name} ${flow.description}`.toLowerCase().includes(query))
+    .map((flow) => {
+      const button = document.createElement("button"); button.className = "studio-block";
+      button.type = "button"; button.textContent = flow.name;
+      const small = document.createElement("small"); small.textContent = flow.description || "Reusable workflow";
+      button.append(small); button.onclick = () => studioAddFlow(flow.name);
+      return button;
+    }));
+}
+
+function studioAddFlow(flowName) {
+  const flow = Studio.subflows.get(flowName);
+  if (!flow) return;
+  let name = flowName.replace(/[^A-Za-z0-9_]/g, "_");
+  let index = 2;
+  while (Object.hasOwn(Studio.flow.steps, name)) name = `${flowName}_${index++}`;
+  const count = Object.keys(Studio.flow.steps).length;
+  Studio.flow.steps[name] = {
+    flow: `${flowName}.json`,
+    settings: Object.fromEntries(Object.entries(flow.params || {}).filter(([, spec]) =>
+      Object.hasOwn(spec, "default")).map(([key, spec]) => [key, spec.default])),
+    position: { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 },
+  };
+  Studio.selected = name; Studio.dirty = true; studioRender();
+  studioMessage(`${name} added as a reusable flow.`);
 }
 
 function studioPosition(name, index) {
@@ -166,6 +212,7 @@ function studioRender() {
       + (Studio.problems.some((p) => p.includes(`step '${name}'`)) ? " invalid" : "")
       + (Studio.connecting === name ? " connecting" : "");
     node.style.left = `${pos.x}px`; node.style.top = `${pos.y}px`;
+    if (step.note) node.title = step.note;
     const title = document.createElement("strong"); title.textContent = name;
     const kind = document.createElement("small"); kind.textContent = step.block || `Sub-flow: ${step.flow}`;
     const input = document.createElement("button"); input.className = "input-port";
@@ -194,6 +241,107 @@ function studioRender() {
   studioInspector();
   studioRenderTests();
   studioRenderSchedules();
+  studioRenderParams();
+}
+
+function studioParamDefault(type) {
+  return type === "bool" ? false : type === "int" || type === "float" ? 0
+    : type === "list" ? [] : type === "dict" ? {} : "";
+}
+
+function studioRenameParamReferences(previous, next) {
+  const pattern = new RegExp(`(\\{\\{\\s*params\\.)${previous}(?=\\.|\\s*\\}\\})`, "g");
+  const rewrite = (value) => {
+    if (typeof value === "string") return value.replace(pattern, `$1${next}`);
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === "object") {
+      for (const key of Object.keys(value)) value[key] = rewrite(value[key]);
+    }
+    return value;
+  };
+  rewrite(Studio.flow.steps);
+  rewrite(Studio.flow.outputs);
+  rewrite(Studio.flow.on_failure);
+  for (const test of Studio.flow.tests || []) if (Object.hasOwn(test.params || {}, previous)) {
+    test.params[next] = test.params[previous]; delete test.params[previous];
+  }
+}
+
+function studioRenderParams() {
+  const host = document.getElementById("studio-params-editor");
+  const params = Studio.flow.params ||= {};
+  const description = document.createElement("textarea");
+  description.value = Studio.flow.description || "";
+  description.placeholder = "What does this workflow do?";
+  description.setAttribute("aria-label", "Flow description");
+  description.onchange = () => { Studio.flow.description = description.value; Studio.dirty = true; };
+  const rows = Object.entries(params).map(([key, spec]) => {
+    const row = document.createElement("div"); row.className = "studio-param-row";
+    const name = document.createElement("input"); name.value = key;
+    name.setAttribute("aria-label", `Parameter ${key} name`);
+    name.onchange = () => {
+      const next = name.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(next) || (next !== key && Object.hasOwn(params, next))) {
+        studioMessage("Parameter names must be unique and use letters, numbers or _.", true);
+        name.value = key; return;
+      }
+      if (next !== key) {
+        params[next] = spec; delete params[key]; studioRenameParamReferences(key, next);
+        Studio.dirty = true; studioRender();
+      }
+    };
+    const type = document.createElement("select"); type.setAttribute("aria-label", `Parameter ${key} type`);
+    type.append(...["str", "int", "float", "bool", "list", "dict"].map((value) => new Option(value, value)));
+    type.value = spec.type || "str";
+    type.onchange = () => { spec.type = type.value; spec.default = studioParamDefault(type.value); Studio.dirty = true; studioRenderParams(); };
+    const enabled = document.createElement("input"); enabled.type = "checkbox";
+    enabled.checked = Object.hasOwn(spec, "default");
+    enabled.setAttribute("aria-label", `Parameter ${key} has default`);
+    enabled.onchange = () => {
+      if (enabled.checked) spec.default = studioParamDefault(spec.type || "str");
+      else delete spec.default;
+      Studio.dirty = true; studioRenderParams();
+    };
+    let value;
+    if (spec.type === "bool") {
+      value = document.createElement("select");
+      value.append(new Option("false", "false"), new Option("true", "true"));
+      value.value = String(spec.default ?? false);
+      value.onchange = () => { spec.default = value.value === "true"; Studio.dirty = true; };
+    } else {
+      value = spec.type === "list" || spec.type === "dict"
+        ? document.createElement("textarea") : document.createElement("input");
+      if (value instanceof HTMLInputElement && ["int", "float"].includes(spec.type)) {
+        value.type = "number"; value.step = spec.type === "int" ? "1" : "any";
+      }
+      value.value = typeof spec.default === "string" ? spec.default : JSON.stringify(spec.default ?? "");
+      value.onchange = () => {
+        const raw = value.value;
+        const parsed = spec.type === "int" || spec.type === "float" ? Number(raw)
+          : spec.type === "list" || spec.type === "dict" ? studioTestValue(raw) : raw;
+        spec.default = parsed; Studio.dirty = true;
+      };
+    }
+    value.disabled = !enabled.checked;
+    value.setAttribute("aria-label", `Parameter ${key} default`);
+    const help = document.createElement("input"); help.value = spec.help || "";
+    help.placeholder = "Help text"; help.setAttribute("aria-label", `Parameter ${key} help`);
+    help.onchange = () => { spec.help = help.value; Studio.dirty = true; };
+    const remove = document.createElement("button"); remove.type = "button";
+    remove.className = "btn danger"; remove.textContent = "Remove";
+    remove.onclick = () => { delete params[key]; Studio.dirty = true; studioRenderParams(); };
+    row.append(name, type, enabled, value, help, remove);
+    return row;
+  });
+  const add = document.createElement("button"); add.type = "button"; add.className = "btn";
+  add.textContent = "Add parameter";
+  add.onclick = () => {
+    let number = 1;
+    while (Object.hasOwn(params, `parameter_${number}`)) number++;
+    params[`parameter_${number}`] = { type: "str", default: "" };
+    Studio.dirty = true; studioRenderParams();
+  };
+  host.replaceChildren(description, ...rows, add);
 }
 
 function studioRenderSchedules() {
@@ -335,18 +483,49 @@ function studioInspector() {
   document.getElementById("studio-inspector-title").textContent = name ? name : "Settings";
   if (!step) { host.textContent = "Select a node on the canvas."; return; }
   const spec = Studio.blocks.get(step.block);
+  const child = step.flow ? Studio.subflows.get(step.flow.replace(/\.json$/, "")) : null;
+  const fields = spec ? spec.settings : child ? Object.entries(child.params || {}).map(([key, def]) => ({
+    name: key, types: [def.type || "str"], required: !Object.hasOwn(def, "default"),
+    ...(Object.hasOwn(def, "default") ? { default: def.default } : {}),
+    help: def.help || "", secret: false,
+  })) : [];
   const form = document.createElement("form"); form.onsubmit = (event) => event.preventDefault();
-  if (spec) for (const setting of spec.settings) {
+  step.settings ||= {};
+  for (const setting of fields) {
     const label = document.createElement("label");
     label.textContent = `${setting.name}${setting.required ? " *" : ""}`;
     const value = step.settings?.[setting.name] ?? studioDefault(setting);
-    const field = setting.types.includes("list") || setting.types.includes("dict")
-      ? document.createElement("textarea") : document.createElement("input");
-    if (field instanceof HTMLInputElement) field.type = setting.secret ? "password" : "text";
+    const field = setting.choices?.length || setting.types.includes("bool")
+      ? document.createElement("select")
+      : setting.types.includes("list") || setting.types.includes("dict")
+        ? document.createElement("textarea") : document.createElement("input");
+    if (field instanceof HTMLSelectElement) {
+      const choices = setting.choices?.length ? setting.choices : [false, true];
+      field.append(...choices.map((choice) => new Option(String(choice), String(choice))));
+    }
+    if (field instanceof HTMLInputElement) {
+      field.type = setting.secret ? "password" : "text";
+      if (setting.types.includes("int") || setting.types.includes("float")) field.inputMode = "decimal";
+    }
     field.value = typeof value === "string" ? value : JSON.stringify(value);
     field.placeholder = setting.secret ? "{{ env.NAME }}" : "";
     field.onchange = () => { step.settings[setting.name] = studioValue(field.value, setting.types); Studio.dirty = true; };
     label.append(field);
+    if (!(field instanceof HTMLSelectElement)) {
+      const source = document.createElement("select");
+      source.setAttribute("aria-label", `Use value for ${setting.name}`);
+      source.append(new Option("Use value from…", ""),
+        ...Object.keys(Studio.flow.params || {}).map((key) => new Option(`Parameter: ${key}`, `{{ params.${key} }}`)),
+        ...Object.keys(Studio.flow.steps).filter((key) => key !== name)
+          .map((key) => new Option(`Step: ${key}`, `{{ ${key} }}`)));
+      source.onchange = () => {
+        if (!source.value) return;
+        field.value = source.value;
+        step.settings[setting.name] = source.value;
+        Studio.dirty = true;
+      };
+      label.append(source);
+    }
     if (setting.help) { const hint = document.createElement("span"); hint.className = "hint"; hint.textContent = setting.help; label.append(hint); }
     form.append(label);
   }
@@ -360,6 +539,11 @@ function studioInspector() {
     const list = document.createElement("p"); list.className = "hint";
     list.textContent = `Dependencies: ${step.after.join(", ")}`; form.append(list);
   }
+  const note = document.createElement("label"); note.textContent = "Annotation";
+  const noteField = document.createElement("textarea");
+  noteField.value = step.note || ""; noteField.placeholder = "Explain this step for teammates";
+  noteField.onchange = () => { step.note = noteField.value; Studio.dirty = true; };
+  note.append(noteField); form.append(note);
   const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn danger"; remove.textContent = "Delete block";
   remove.onclick = () => {
     delete Studio.flow.steps[name];
@@ -377,7 +561,12 @@ async function studioValidate(save = false) {
     studioRender();
     studioMessage(result.valid ? (save ? `Saved ${Studio.name}.json` : "Workflow is valid.")
       : Studio.problems.join("\n"), !result.valid);
-    if (save && result.valid) { Studio.dirty = false; await studioList(); await loadControl(); }
+    if (save && result.valid) {
+      Studio.dirty = false; await studioList(); await loadControl();
+      const subflows = await studioApi("/api/subflows");
+      Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
+      studioPalette();
+    }
     return result.valid;
   } catch (error) { studioMessage(String(error), true); return false; }
 }
@@ -385,7 +574,10 @@ async function studioValidate(save = false) {
 async function studioRun() {
   if (!await studioValidate(true)) return;
   try {
-    await studioApi("/api/control/run", { flow: Studio.name, fail_rate: 0 });
+    await studioApi("/api/control/run", {
+      flow: Studio.name, fail_rate: 0,
+      environment: document.getElementById("studio-environment").value,
+    });
     studioShow(false);
     studioMessage(`${Studio.name} started.`);
     setTimeout(loadRuns, 500);
@@ -397,7 +589,9 @@ async function studioPartial() {
   const step = Studio.selected;
   if (!await studioValidate(true)) return;
   try {
-    await studioApi("/api/control/partial", { flow: Studio.name, step });
+    await studioApi("/api/control/partial", {
+      flow: Studio.name, step, environment: document.getElementById("studio-environment").value,
+    });
     studioShow(false);
     setTimeout(loadRuns, 500);
   } catch (error) { studioMessage(String(error), true); }
@@ -405,13 +599,23 @@ async function studioPartial() {
 
 async function studioInit() {
   try {
-    const [catalog] = await Promise.all([studioApi("/api/blocks"), studioList()]);
+    const [catalog, , environments, subflows, templates] = await Promise.all([
+      studioApi("/api/blocks"), studioList(), studioApi("/api/environments"),
+      studioApi("/api/subflows"), studioApi("/api/templates"),
+    ]);
     Studio.blocks = new Map(catalog.map((block) => [block.name, block]));
+    Studio.environments = environments;
+    Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
+    document.getElementById("studio-environment").replaceChildren(
+      new Option("Default", ""), ...environments.map((name) => new Option(name, name)));
+    document.getElementById("studio-template").replaceChildren(...templates.map((item) =>
+      new Option(`${item.name} — ${item.description}`, item.name)));
     document.getElementById("view-editor").hidden = false;
     document.getElementById("view-editor").onclick = () => studioShow(true);
     document.getElementById("view-runs").onclick = () => studioShow(false);
     document.getElementById("studio-flow").onchange = (event) => studioOpen(event.target.value);
     document.getElementById("studio-new").onclick = studioNew;
+    document.getElementById("studio-use-template").onclick = studioUseTemplate;
     document.getElementById("studio-search").oninput = studioPalette;
     document.getElementById("studio-validate").onclick = () => studioValidate(false);
     document.getElementById("studio-test").onclick = studioTest;

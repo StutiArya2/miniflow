@@ -182,6 +182,26 @@ def test_partial_json_run_uses_same_history(controller, store, flows_dir):
     assert second != first
     assert set(store.get_states(second)) == {"first"}
     assert store.changes_since(second, 0)[0].from_cache
+
+
+def test_browser_run_selects_environment(controller, store, flows_dir):
+    environment = flows_dir / "environments"
+    environment.mkdir()
+    (environment / "dev.json").write_text('{"message": "from dev"}', encoding="utf-8")
+    path = flows_dir / "greeting.json"
+    path.write_text(
+        '{"params":{"message":{"type":"str","default":"default"}},'
+        '"steps":{"say":{"block":"log","settings":{"message":"{{ params.message }}"}}}}',
+        encoding="utf-8",
+    )
+    controller.add_flow("greeting", path)
+    controller.start("greeting", 0.0, "dev")
+    wait_until(lambda: idle(controller))
+    run_id = run_of(store, "greeting")
+    assert store.load_completed(run_id)["say"]["message"] == "from dev"
+    with pytest.raises(ControlError) as error:
+        controller.start("greeting", 0.0, "../secret")
+    assert error.value.status == HTTPStatus.BAD_REQUEST
     assert store.latest_run("quick") is None
 
 

@@ -98,6 +98,12 @@ miniflow ui --flows examples                   # edit, validate, save and run in
 
 Use the **Editor** button in the dashboard to open a visual canvas. Add blocks from the
 searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+An empty flows folder also has **hello_world** and **sales_report** starters. **Use starter**
+creates a compatible JSON flow and, for the sales report, its sample CSV. Open **Parameters**
+to change defaults without editing JSON; use a setting's **Use value from…** selector to insert
+a parameter or prior step. The **Environment** selector lists local environment names while
+keeping their values on disk. Other saved JSON flows appear under **Reusable flows** in the
+palette, with their declared parameters in the settings panel. Nodes also accept annotations.
 Select a node and choose **Run up to selected** to execute just that node and its dependencies.
 MiniFlow reuses results from the latest run when their step configuration, referenced parameters,
 environment values, code, local file inputs and upstream results still match. A changed input

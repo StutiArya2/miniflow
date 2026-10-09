@@ -173,6 +173,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(self.server.examples_json())
             elif parts == ["api", "blocks"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.catalog())
+            elif parts == ["api", "environments"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.environments())
+            elif parts == ["api", "subflows"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.subflows())
+            elif parts == ["api", "templates"] and self.server.workspace is not None:
+                self._send_json(self.server.workspace.templates())
             elif parts == ["api", "flows"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.list())
             elif (
@@ -184,6 +190,11 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.server.workspace.read(parts[2]))
                 except (FileNotFoundError, WorkspaceError):
                     self._send_error(HTTPStatus.NOT_FOUND, "flow not found")
+                except json.JSONDecodeError as exc:
+                    self._send_error(
+                        HTTPStatus.BAD_REQUEST,
+                        f"flow JSON is invalid at line {exc.lineno}, column {exc.colno}",
+                    )
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -212,6 +223,14 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if parts == ["api", "flows", "template"] and self.server.workspace is not None:
+                body = self._control_body()
+                name = _text(body, "name")
+                document = self.server.workspace.create_template(_text(body, "template"), name)
+                if controller is not None:
+                    controller.add_flow(name, self.server.workspace.folder / f"{name}.json")
+                self._send_json(document, HTTPStatus.CREATED)
+                return
             if (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
@@ -259,13 +278,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = self._control_body()
             if parts[2] == "run":
-                active = controller.start(_text(body, "flow"), body.get("fail_rate"))
+                active = controller.start(
+                    _text(body, "flow"), body.get("fail_rate"), body.get("environment")
+                )
                 self._send_json(active, HTTPStatus.ACCEPTED)
             elif parts[2] == "resume":
                 active = controller.resume(_text(body, "run_id"), body.get("fail_rate"))
                 self._send_json(active, HTTPStatus.ACCEPTED)
             elif parts[2] == "partial":
-                active = controller.partial(_text(body, "flow"), _text(body, "step"))
+                active = controller.partial(
+                    _text(body, "flow"), _text(body, "step"), body.get("environment")
+                )
                 self._send_json(active, HTTPStatus.ACCEPTED)
             else:
                 controller.cancel()

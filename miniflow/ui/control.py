@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from miniflow.store import RunRecord, StateStore
 __all__ = ["ControlError", "RunController"]
 
 _ERROR_LINES = 20
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 # Each run gets its own process group, so it can be interrupted or killed with its workers.
 if sys.platform == "win32":
@@ -122,13 +124,14 @@ class RunController:
         self._error: str | None = None
 
     # ---------------------------------------------------------------- actions
-    def start(self, flow: str, fail_rate: object) -> dict[str, Any]:
+    def start(self, flow: str, fail_rate: object, environment: object = None) -> dict[str, Any]:
         """Run ``flow`` with ``MINIFLOW_FAIL_RATE=fail_rate``; returns the active run."""
         rate = _check_rate(fail_rate)
         path = self.flows.get(flow)
         if path is None:
             raise ControlError(f"no flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
-        return self._launch("run", flow, path, rate, [])
+        extra = self._environment_args(path, environment)
+        return self._launch("run", flow, path, rate, extra)
 
     def resume(self, run_id: str, fail_rate: object) -> dict[str, Any]:
         """Resume run ``run_id``, reusing the tasks that already succeeded."""
@@ -144,18 +147,34 @@ class RunController:
             )
         return self._launch("resume", meta.flow, path, rate, ["--run", run_id])
 
-    def partial(self, flow: str, step: str) -> dict[str, Any]:
+    def partial(self, flow: str, step: str, environment: object = None) -> dict[str, Any]:
         """Run through one JSON step, reusing only matching earlier results."""
         path = self.flows.get(flow)
         if path is None or path.suffix != ".json":
             raise ControlError(f"no JSON flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
         try:
-            dag = load_json_flow(path).dag
+            extra = self._environment_args(path, environment)
+            dag = load_json_flow(
+                path, environment=environment if isinstance(environment, str) else None
+            ).dag
         except FlowFileError as exc:
             raise ControlError(str(exc), HTTPStatus.BAD_REQUEST) from exc
         if step not in dag:
             raise ControlError(f"no step {step!r} in {flow!r}", HTTPStatus.BAD_REQUEST)
-        return self._launch("partial", flow, path, 0.0, ["--until", step, "--reuse", "latest"])
+        return self._launch(
+            "partial", flow, path, 0.0, ["--until", step, "--reuse", "latest", *extra]
+        )
+
+    def _environment_args(self, path: Path, environment: object) -> list[str]:
+        if environment is None or environment == "":
+            return []
+        if path.suffix != ".json":
+            raise ControlError("environments only apply to JSON flows", HTTPStatus.BAD_REQUEST)
+        if not isinstance(environment, str) or not _ENV_NAME.fullmatch(environment):
+            raise ControlError("invalid environment name", HTTPStatus.BAD_REQUEST)
+        if not (path.parent / "environments" / f"{environment}.json").is_file():
+            raise ControlError(f"no environment {environment!r}", HTTPStatus.BAD_REQUEST)
+        return ["--environment", environment]
 
     def cancel(self) -> None:
         """Stop the active run and return once its process has exited."""

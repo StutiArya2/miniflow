@@ -33,7 +33,10 @@
       <div class="studio-toolbar panel">
         <label>Flow <select id="studio-flow"></select></label>
         <button type="button" id="studio-new" class="btn">New</button>
+        <label>Starter <select id="studio-template"></select></label>
+        <button type="button" id="studio-use-template" class="btn">Use starter</button>
         <label>Name <input id="studio-name" autocomplete="off" pattern="[A-Za-z_][A-Za-z0-9_\-]*"></label>
+        <label>Environment <select id="studio-environment"><option value="">Default</option></select></label>
         <button type="button" id="studio-validate" class="btn">Validate</button>
         <button type="button" id="studio-test" class="btn">Test</button>
         <button type="button" id="studio-save" class="btn">Save</button>
@@ -48,12 +51,18 @@
         <summary>Schedules <span class="hint">Run this flow locally at an interval or time of day</span></summary>
         <div id="studio-schedule-editor"></div>
       </details>
+      <details id="studio-params-panel" class="panel studio-test-panel">
+        <summary>Parameters <span class="hint">Values you can reuse as {{ params.name }} in block settings</span></summary>
+        <div id="studio-params-editor"></div>
+      </details>
       <div class="studio-layout">
         <aside class="studio-palette panel">
           <h2>Blocks</h2>
           <label class="sr-only" for="studio-search">Search blocks</label>
           <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
           <div id="studio-blocks" class="studio-blocks"></div>
+          <h3>Reusable flows</h3>
+          <div id="studio-subflows" class="studio-blocks"></div>
         </aside>
         <div class="studio-center">
           <div class="studio-canvas-scroll">

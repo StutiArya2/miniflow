@@ -92,6 +92,12 @@ def test_params_from_the_command_line(folder, tmp_path):
     assert run(flow, tmp_path)["save"]["rows"] == 1
 
 
+def test_invalid_parameter_name_is_rejected(folder):
+    bad = dict(REPORT, params={"has space": {"type": "int", "default": 1}})
+    with pytest.raises(FlowFileError, match="name should start with a letter"):
+        load_json_flow(write(folder, "bad_param", bad))
+
+
 def test_environment_files(folder, tmp_path, monkeypatch):
     monkeypatch.delenv("SHOP_TOKEN", raising=False)
     env = folder / "environments"

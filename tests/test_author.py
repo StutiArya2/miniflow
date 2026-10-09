@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from miniflow.cli import main
 from miniflow.ui import DashboardServer
 from miniflow.ui.author import FlowWorkspace, block_catalog
 
@@ -67,6 +68,32 @@ def test_workspace_catalog_loads_local_plugin_blocks():
     assert "convert_currency" in blocks
 
 
+def test_editor_lists_environments_and_reusable_flow_settings(tmp_path: Path):
+    env = tmp_path / "environments"
+    env.mkdir()
+    (env / "dev.json").write_text('{"message": "from dev"}', encoding="utf-8")
+    (tmp_path / "child.json").write_text(
+        json.dumps(
+            {
+                "description": "Reusable greeting",
+                "params": {"message": {"type": "str", "default": "hi"}},
+                "steps": {"say": {"block": "log", "settings": {"message": "{{ params.message }}"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        assert request(server, "GET", "/api/environments") == (200, ["dev"])
+        status, flows = request(server, "GET", "/api/subflows")
+        assert status == 200
+        assert flows[0]["name"] == "child"
+        assert flows[0]["params"]["message"]["default"] == "hi"
+        status, problem = request(server, "GET", "/api/flows/broken")
+        assert status == 400
+        assert "flow JSON is invalid" in problem["error"]
+
+
 def test_browser_can_run_unsaved_flow_tests(tmp_path: Path):
     with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
         flow = {
@@ -88,3 +115,42 @@ def test_browser_can_run_unsaved_flow_tests(tmp_path: Path):
         assert status == 200
         assert result == [{"name": "sample", "passed": True, "problems": []}]
         assert not (tmp_path / "unsaved.json").exists()
+
+
+def test_starter_sales_report_is_created_and_runs_offline(tmp_path: Path):
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        status, templates = request(server, "GET", "/api/templates")
+        assert status == 200
+        assert {item["name"] for item in templates} == {"hello_world", "sales_report"}
+        status, document = request(
+            server,
+            "POST",
+            "/api/flows/template",
+            {
+                "template": "sales_report",
+                "name": "shop_demo",
+            },
+        )
+        assert status == 201
+        assert document["steps"]["sales"]["block"] == "read_csv"
+        assert "shop_demo" in server.controller.status()["flows"]
+        assert (tmp_path / "data" / "shop_demo_sales.csv").exists()
+        assert (
+            request(
+                server,
+                "POST",
+                "/api/flows/template",
+                {
+                    "template": "sales_report",
+                    "name": "shop_demo",
+                },
+            )[0]
+            == 400
+        )
+    assert (
+        main(
+            ["run", str(tmp_path / "shop_demo.json"), "--db", str(tmp_path / "runs.db"), "--quiet"]
+        )
+        == 0
+    )
+    assert (tmp_path / "out" / "shop_demo_report.csv").exists()

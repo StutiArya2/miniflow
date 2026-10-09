@@ -202,6 +202,9 @@ class _Checker:
         values: dict[str, Any] = {}
         for name, spec in declared.items():
             where = f"parameter {name!r}"
+            if not isinstance(name, str) or not _NAME.fullmatch(name):
+                self.add(f"{where}: name should start with a letter and use letters, numbers or _")
+                continue
             if not isinstance(spec, dict):
                 self.add(f'{where} should be an object like {{"type": "int", "default": 1}}')
                 continue
