@@ -116,19 +116,26 @@
       <summary class="page-head"><h1>Examples</h1><span class="hint" id="gallery-hint">Pick one and watch it run.</span></summary>
       <div class="example-list" id="example-cards"></div>
     </details>
-    <section id="control" class="control view-runs" aria-label="Run controls" hidden>
-      <label class="field">Flow <select id="ctl-flow"></select></label>
-      <label class="field" title="Makes some steps fail on purpose so you can watch retries and resume. Only demo flows use it.">
-        Simulate failures
-        <input type="range" id="ctl-rate" min="0" max="100" step="5" value="40">
-        <output id="ctl-rate-value" for="ctl-rate">40%</output>
-      </label>
-      <button type="button" id="ctl-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Run</button>
-      <button type="button" id="ctl-resume" class="btn" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v2.6h-2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Resume this run</button>
-      <span id="ctl-active" class="ctl-active" aria-live="polite" hidden></span>
-      <button type="button" id="ctl-cancel" class="btn danger" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg> Cancel</button>
-      <pre id="ctl-error" class="error ctl-error" role="alert" hidden></pre>
-    </section>
+    <div class="page-bar view-runs" id="run-bar">
+      <nav class="crumbs" aria-label="Breadcrumb"><span>Runs</span><span class="sep">/</span><span id="crumb-run"></span></nav>
+      <div class="bar-actions">
+        <span id="ctl-active" class="ctl-active" aria-live="polite" hidden></span>
+        <button type="button" id="ctl-resume" class="btn" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v2.6h-2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Resume</button>
+        <button type="button" id="ctl-cancel" class="btn danger" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg> Cancel</button>
+        <div class="newrun">
+          <button type="button" id="new-run" class="btn primary" aria-expanded="false" aria-controls="control" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> New run</button>
+          <section id="control" class="control popover" aria-label="Start a run" hidden>
+            <label class="field">Flow <select id="ctl-flow"></select></label>
+            <label class="field" title="Makes some steps fail on purpose so you can watch retries and resume. Only demo flows use it.">
+              <span>Simulate failures <output id="ctl-rate-value" for="ctl-rate">40%</output></span>
+              <input type="range" id="ctl-rate" min="0" max="100" step="5" value="40">
+            </label>
+            <button type="button" id="ctl-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Start run</button>
+            <pre id="ctl-error" class="error ctl-error" role="alert" hidden></pre>
+          </section>
+        </div>
+      </div>
+    </div>
 
     <section id="empty" class="empty view-runs" hidden>
       <h1>No runs yet</h1>
@@ -136,7 +143,7 @@
         <p>Start one and it will appear here live:</p>
         <pre><code>miniflow run examples/pipeline.py --ui</code></pre>
       </div>
-      <p id="empty-control" hidden>Pick a flow above and press <strong>Run</strong>.</p>
+      <p id="empty-control" hidden>Press <strong>New run</strong> to start one, or run an example.</p>
       <p class="muted" id="empty-db"></p>
     </section>
 
@@ -147,15 +154,13 @@
           <p id="story-text"></p>
           <p class="watch" id="story-watch" hidden><span></span></p>
         </div>
-        <div class="summary" aria-label="Run summary">
-          <div class="stats" id="stats"></div>
-          <div class="progress" id="progress" role="img" aria-label="Task progress"></div>
-        </div>
+        <dl class="props" id="stats" aria-label="Run summary"></dl>
+        <div class="progress" id="progress" role="img" aria-label="Task progress"></div>
       </header>
 
-      <section class="block" id="run-problems" aria-labelledby="run-problems-title" hidden>
-        <h2 id="run-problems-title">What went wrong</h2>
-        <div id="run-problems-body"></div>
+      <section class="alert" id="run-problems" role="alert" aria-labelledby="run-problems-title" hidden>
+        <svg class="alert-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.8v3.6M8 10.9v.1"/></svg>
+        <div><h2 id="run-problems-title"></h2><div id="run-problems-body"></div></div>
       </section>
 
       <section class="block outcome" id="outcome" aria-labelledby="outcome-title">
@@ -177,7 +182,7 @@
           </div>
           <div id="pane-list" class="pane-body" role="tabpanel">
             <table class="step-table">
-              <thead><tr><th>Step</th><th>Status</th><th class="num">Tries</th><th class="num">Took</th></tr></thead>
+              <thead><tr><th>Step</th><th>Status</th><th class="num">Tries</th><th class="num">Duration</th><th class="track-col">When</th></tr></thead>
               <tbody id="step-rows"></tbody>
             </table>
           </div>
@@ -211,6 +216,7 @@
         </section>
         <aside class="details" id="details" aria-labelledby="details-title" aria-live="polite">
           <h2 id="details-title" class="sr-only">Step details</h2>
+          <button type="button" class="icon-btn details-close" id="details-close" title="Close" aria-label="Close step details"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div id="details-body"><p class="muted">Select a step to see what it did.</p></div>
         </aside>
       </div>
