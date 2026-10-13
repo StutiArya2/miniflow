@@ -41,6 +41,7 @@ function studioUndoRedo(step) {
   Studio.dirty = true;
   if (Studio.selected && !(Studio.selected in Studio.flow.steps)) Studio.selected = null;
   Studio.multi = new Set([...Studio.multi].filter((name) => name in Studio.flow.steps));
+  Studio.wire = null;
   studioHistoryButtons();
   studioRender();
   studioMessage(step < 0 ? "Undone." : "Redone.");
@@ -62,6 +63,7 @@ function studioSelection() {
 }
 
 function studioToggleSelect(name, additive) {
+  Studio.wire = null;
   if (!additive) {
     Studio.multi = new Set();
     Studio.selected = name;
@@ -88,6 +90,42 @@ function studioRenameRefs(value, map) {
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, studioRenameRefs(v, map)]));
   }
   return value;
+}
+
+/* Rename step `old` to `next` everywhere the flow names it: other steps' settings and
+ * `after`, outputs, the finish actions and the flow tests. One undoable change. */
+function studioRenameStep(old, next) {
+  const flow = Studio.flow;
+  if (old === next || !(old in flow.steps)) return false;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(next)) {
+    studioMessage("A step name uses letters, numbers or _, and doesn't start with a number.", true);
+    return false;
+  }
+  if (next in flow.steps || ["params", "env", "failure"].includes(next)) {
+    studioMessage(`There is already something called ${next}. Pick another name.`, true);
+    return false;
+  }
+  const map = { [old]: next };
+  flow.steps = Object.fromEntries(Object.entries(flow.steps).map(([name, step]) => {
+    step.settings = studioRenameRefs(step.settings || {}, map);
+    if (step.after) step.after = step.after.map((dep) => (dep === old ? next : dep));
+    return [name === old ? next : name, step];
+  }));
+  if (flow.outputs) flow.outputs = studioRenameRefs(flow.outputs, map);
+  for (const key of ["on_failure", "on_success"]) {
+    if (flow[key]?.settings) flow[key].settings = studioRenameRefs(flow[key].settings, map);
+  }
+  for (const test of flow.tests || []) {
+    for (const key of ["inputs", "expect"]) {
+      if (test[key] && Object.hasOwn(test[key], old)) {
+        test[key] = Object.fromEntries(Object.entries(test[key]).map(([k, v]) => [k === old ? next : k, v]));
+      }
+    }
+  }
+  if (Studio.selected === old) Studio.selected = next;
+  if (Studio.multi.has(old)) { Studio.multi.delete(old); Studio.multi.add(next); }
+  studioCommit();
+  return true;
 }
 
 function studioUniqueName(base, taken) {
@@ -169,6 +207,12 @@ document.addEventListener("keydown", (event) => {
   else if (mod && key === "c") { event.preventDefault(); studioCopy(); }
   else if (mod && key === "v") { event.preventDefault(); studioPaste(); }
   else if (mod && key === "d") { event.preventDefault(); studioDuplicate(); }
-  else if (key === "delete" || key === "backspace") { event.preventDefault(); studioDeleteSelected(); }
-  else if (key === "escape") { Studio.multi = new Set(); Studio.selected = null; studioRender(); }
+  else if (key === "delete" || key === "backspace") {
+    event.preventDefault();
+    if (Studio.wire) studioRemoveWire(Studio.wire);
+    else studioDeleteSelected();
+  } else if (key === "escape") {
+    Studio.multi = new Set(); Studio.selected = null; Studio.wire = null;
+    studioQuickAddClose(); studioRender();
+  }
 });

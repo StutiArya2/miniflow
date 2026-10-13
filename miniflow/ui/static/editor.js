@@ -11,6 +11,7 @@ const Studio = {
   clipboard: null,           // copied steps as JSON text
   runData: null,             // run shown on the canvas: {run, graph, tasks}
   signatures: {},            // current step signatures from the last validation
+  wire: null,                // selected connection: {from, to}
 };
 
 function studioMessage(message, error = false) {
@@ -145,7 +146,8 @@ function studioSlot(at, count) {
     : { x: 90 + (count % 4) * 250, y: 90 + Math.floor(count / 4) * 150 };
 }
 
-function studioAdd(blockName, at) {
+/* Add a `blockName` step at `at` (or the next free slot); with `after`, it runs after that step. */
+function studioAdd(blockName, at, after) {
   const spec = Studio.blocks.get(blockName);
   if (!spec) return;
   let name = blockName.replace(/[^A-Za-z0-9_]/g, "_");
@@ -154,32 +156,54 @@ function studioAdd(blockName, at) {
   const count = Object.keys(Studio.flow.steps).length;
   Studio.flow.steps[name] = {
     block: blockName, settings: Object.fromEntries(spec.settings.map((s) => [s.name, studioDefault(s)])),
+    ...(after ? { after: [after] } : {}),
     position: studioSlot(at, count),
   };
   Studio.selected = name;
   Studio.multi = new Set();
+  Studio.wire = null;
   studioCommit();
   studioRender();
-  studioMessage(`${name} added. Configure it in the settings panel.`);
+  studioMessage(after ? `${name} added after ${after}. Configure it in the settings panel.`
+    : `${name} added. Configure it in the settings panel.`);
+}
+
+/* Palette groups in a fixed order; anything else (plugins) comes last. */
+const STUDIO_GROUPS = ["Read & write", "Transform", "Text & dates", "Excel", "Messages, AI & cloud", "Email & utilities", "Databases", "System"];
+
+function studioBlockButton(b) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "studio-block";
+  button.textContent = b.name;
+  const small = document.createElement("small");
+  small.textContent = `${b.kind} · ${b.description}`;
+  button.append(small);
+  button.onclick = () => studioAdd(b.name);
+  studioDraggable(button, "block", b.name);
+  return button;
 }
 
 function studioPalette() {
   const query = document.getElementById("studio-search").value.trim().toLowerCase();
   const items = [...Studio.blocks.values()].filter((b) =>
-    `${b.name} ${b.description}`.toLowerCase().includes(query));
+    `${b.name} ${b.description} ${b.group || ""}`.toLowerCase().includes(query));
+  const groups = new Map();
+  for (const b of items) {
+    const group = b.group || "Other";
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(b);
+  }
+  const order = (g) => { const i = STUDIO_GROUPS.indexOf(g); return i < 0 ? STUDIO_GROUPS.length : i; };
   const list = document.getElementById("studio-blocks");
-  list.replaceChildren(...items.map((b) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "studio-block";
-    button.textContent = b.name;
-    const small = document.createElement("small");
-    small.textContent = `${b.kind} · ${b.description}`;
-    button.append(small);
-    button.onclick = () => studioAdd(b.name);
-    studioDraggable(button, "block", b.name);
-    return button;
-  }));
+  list.replaceChildren(...[...groups.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b))
+    .flatMap((group) => {
+      const heading = document.createElement("h4");
+      heading.className = "studio-group";
+      heading.textContent = group;
+      return [heading, ...groups.get(group).map(studioBlockButton)];
+    }));
+  if (!items.length) list.replaceChildren(Object.assign(document.createElement("p"), { className: "hint", textContent: "No block matches." }));
   document.getElementById("studio-subflows").replaceChildren(...[...Studio.subflows.values()]
     .filter((flow) => flow.name !== Studio.name && `${flow.name} ${flow.description}`.toLowerCase().includes(query))
     .map((flow) => {
@@ -224,6 +248,14 @@ function studioWire(from, to, positions) {
   return path;
 }
 
+/* Settings of `step` whose value uses {{ dep }} (or {{ dep.field }}). */
+function studioSettingsUsing(step, dep) {
+  const pattern = new RegExp(`\\{\\{\\s*${dep}(?=[\\s.}])`);
+  return Object.entries(step.settings || {})
+    .filter(([, value]) => pattern.test(typeof value === "string" ? value : JSON.stringify(value)))
+    .map(([key]) => key);
+}
+
 function studioWires(positions) {
   const svg = document.getElementById("studio-wires");
   const edges = [];
@@ -231,13 +263,76 @@ function studioWires(positions) {
     const inferred = [...JSON.stringify(step.settings || {}).matchAll(/\{\{\s*([A-Za-z_]\w*)/g)]
       .map((match) => match[1]);
     for (const dep of new Set([...(step.after || []), ...inferred])) {
-      if (dep in Studio.flow.steps && dep !== name) {
-        const line = studioWire(dep, name, positions);
-        if (line) edges.push(line);
-      }
+      if (!(dep in Studio.flow.steps) || dep === name) continue;
+      const line = studioWire(dep, name, positions);
+      if (!line) continue;
+      const explicit = (step.after || []).includes(dep);
+      const chosen = Studio.wire?.from === dep && Studio.wire?.to === name;
+      line.setAttribute("class", `studio-wire${explicit ? "" : " inferred"}${chosen ? " chosen" : ""}`);
+      // a wide invisible copy of the path makes the thin wire easy to click
+      const hit = line.cloneNode();
+      hit.setAttribute("class", "studio-wire-hit");
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${dep} → ${name}: click to select`;
+      hit.append(title);
+      hit.addEventListener("pointerdown", (event) => event.stopPropagation());
+      hit.addEventListener("click", (event) => {
+        event.stopPropagation();
+        Studio.wire = { from: dep, to: name };
+        Studio.selected = null; Studio.multi = new Set();
+        studioRender();
+        studioMessage(explicit ? `${dep} → ${name} selected. Press Delete to remove it.`
+          : studioInferredWhy(dep, name));
+      });
+      edges.push(line, hit);
     }
   }
   svg.replaceChildren(...edges);
+}
+
+function studioInferredWhy(from, to) {
+  const keys = studioSettingsUsing(Studio.flow.steps[to] || {}, from);
+  return `This connection comes from {{ ${from} }} in ${to}'s ${keys.length ? keys.join(", ") : "settings"}. `
+    + "Change that setting to remove it.";
+}
+
+/* Remove the connection `wire` if it was drawn by hand ("after"); explain it otherwise. */
+function studioRemoveWire(wire) {
+  const step = Studio.flow.steps[wire.to];
+  if (!step) { Studio.wire = null; studioRender(); return; }
+  if (!(step.after || []).includes(wire.from)) { studioMessage(studioInferredWhy(wire.from, wire.to), true); return; }
+  step.after = step.after.filter((dep) => dep !== wire.from);
+  if (!step.after.length) delete step.after;
+  const still = studioSettingsUsing(step, wire.from).length > 0;
+  Studio.wire = null;
+  studioCommit();
+  studioRender();
+  studioMessage(still ? `Removed the drawn connection, but ${studioInferredWhy(wire.from, wire.to)}`
+    : `${wire.from} no longer runs before ${wire.to}. Undo with Ctrl+Z.`, still);
+}
+
+/* Settings-panel content for a selected connection. */
+function studioWirePanel() {
+  const { from, to } = Studio.wire;
+  const box = document.createElement("div");
+  box.className = "studio-wire-panel";
+  const text = document.createElement("p");
+  const explicit = (Studio.flow.steps[to]?.after || []).includes(from);
+  text.textContent = explicit ? `${from} runs before ${to}.` : studioInferredWhy(from, to);
+  box.append(text);
+  if (explicit) {
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "btn danger"; remove.textContent = "Remove connection";
+    remove.onclick = () => studioRemoveWire({ from, to });
+    box.append(remove);
+  }
+  for (const name of [from, to]) {
+    const open = document.createElement("button");
+    open.type = "button"; open.className = "btn"; open.textContent = `Open ${name}`;
+    open.onclick = () => { Studio.wire = null; studioToggleSelect(name, false); };
+    box.append(open);
+  }
+  return box;
 }
 
 function studioConnect(target) {
@@ -273,8 +368,8 @@ function studioRender() {
     input.type = "button"; input.title = "Connect a preceding block"; input.textContent = "●";
     input.onclick = (event) => { event.stopPropagation(); studioConnect(name); };
     const output = document.createElement("button"); output.className = "output-port";
-    output.type = "button"; output.title = "Connect to another block"; output.textContent = "+";
-    output.onclick = (event) => { event.stopPropagation(); Studio.connecting = name; studioRender(); studioMessage(`Select the input port of the block after ${name}.`); };
+    output.type = "button"; output.title = "Add or connect the next step"; output.textContent = "+";
+    output.onclick = (event) => { event.stopPropagation(); studioQuickAdd(name, output); };
     node.append(input, title, kind, output);
     node.onclick = (event) => studioToggleSelect(name, event.shiftKey);
     node.onpointerdown = (event) => {
@@ -296,9 +391,102 @@ function studioRender() {
   studioWires(positions);
   studioDecorate(positions);
   studioInspector();
+  studioRenderProblems();
   studioRenderTests();
   studioRenderSchedules();
   studioRenderParams();
+  studioRenderFinish();
+}
+
+/* ------------------------------------------------------------ quick add next */
+function studioQuickAddClose() {
+  document.getElementById("studio-quick-add")?.remove();
+}
+
+/* Where a step added after `source` goes: to its right, below anything already there. */
+function studioNextSlot(source) {
+  const names = Object.keys(Studio.flow.steps);
+  const from = studioPosition(source, names.indexOf(source));
+  const at = { x: from.x + 250, y: from.y };
+  const taken = names.map((name, i) => studioPosition(name, i));
+  while (taken.some((p) => Math.abs(p.x - at.x) < 180 && Math.abs(p.y - at.y) < 80)) at.y += 120;
+  return at;
+}
+
+/* Popover from a step's "+" port: pick a block to add after the step, or connect to an existing one. */
+function studioQuickAdd(source, anchor) {
+  studioQuickAddClose();
+  const pop = document.createElement("div");
+  pop.id = "studio-quick-add";
+  pop.className = "studio-quick-add panel";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", `Add a step after ${source}`);
+  const search = document.createElement("input");
+  search.placeholder = `Add after ${source}…`;
+  search.setAttribute("aria-label", "Search blocks to add");
+  const list = document.createElement("div");
+  list.className = "studio-quick-list";
+  const uses = new Map();
+  for (const step of Object.values(Studio.flow.steps)) if (step.block) uses.set(step.block, (uses.get(step.block) || 0) + 1);
+  const used = [...uses.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([block]) => block);
+  const pick = (button, run) => { button.type = "button"; button.className = "studio-quick-item"; button.onclick = () => { studioQuickAddClose(); run(); }; return button; };
+  const fill = () => {
+    const query = search.value.trim().toLowerCase();
+    const blocks = [...Studio.blocks.values()].filter((b) => `${b.name} ${b.description} ${b.group || ""}`.toLowerCase().includes(query));
+    blocks.sort((a, b) => (used.includes(a.name) ? used.indexOf(a.name) : 99) - (used.includes(b.name) ? used.indexOf(b.name) : 99));
+    const connect = pick(document.createElement("button"), () => {
+      Studio.connecting = source; studioRender();
+      studioMessage(`Select the input port (●) of the step that should run after ${source}.`);
+    });
+    connect.textContent = "Connect to an existing step…";
+    connect.classList.add("connect");
+    list.replaceChildren(connect, ...blocks.map((b) => {
+      const button = pick(document.createElement("button"), () => studioAdd(b.name, studioNextSlot(source), source));
+      button.textContent = b.name;
+      const small = document.createElement("small");
+      small.textContent = used.includes(b.name) ? "used in this flow" : b.group || b.kind;
+      button.append(small);
+      return button;
+    }));
+  };
+  search.oninput = fill;
+  search.onkeydown = (event) => {
+    if (event.key === "Escape") { studioQuickAddClose(); }
+    else if (event.key === "Enter") { list.querySelectorAll(".studio-quick-item")[search.value ? 1 : 0]?.click(); }
+  };
+  fill();
+  pop.append(search, list);
+  document.body.append(pop);
+  const box = anchor.getBoundingClientRect();
+  const left = Math.min(box.right + 8, window.innerWidth - pop.offsetWidth - 8);
+  const top = Math.min(box.top - 10, window.innerHeight - pop.offsetHeight - 8);
+  pop.style.left = `${Math.max(8, left)}px`;
+  pop.style.top = `${Math.max(8, top)}px`;
+  search.focus();
+  setTimeout(() => document.addEventListener("pointerdown", function away(event) {
+    if (!pop.contains(event.target)) { studioQuickAddClose(); document.removeEventListener("pointerdown", away); }
+  }), 0);
+}
+
+/* ------------------------------------------------------------------ problems */
+function studioRenderProblems() {
+  const host = document.getElementById("studio-problems");
+  if (!host) return;
+  host.hidden = !Studio.problems.length;
+  host.replaceChildren(...Studio.problems.map((problem) => {
+    const item = document.createElement("li");
+    const step = /step '([A-Za-z_]\w*)'/.exec(problem)?.[1];
+    if (step && step in Studio.flow.steps) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "studio-problem";
+      button.textContent = problem; button.title = `Show ${step}`;
+      button.onclick = () => studioFocusStep(step);
+      item.append(button);
+    } else {
+      item.textContent = problem;
+    }
+    return item;
+  }));
 }
 
 function studioParamDefault(type) {
@@ -319,6 +507,7 @@ function studioRenameParamReferences(previous, next) {
   rewrite(Studio.flow.steps);
   rewrite(Studio.flow.outputs);
   rewrite(Studio.flow.on_failure);
+  rewrite(Studio.flow.on_success);
   for (const test of Studio.flow.tests || []) if (Object.hasOwn(test.params || {}, previous)) {
     test.params[next] = test.params[previous]; delete test.params[previous];
   }
@@ -562,24 +751,16 @@ function studioValue(raw, types) {
   return raw;
 }
 
-function studioInspector() {
-  const host = document.getElementById("studio-settings");
-  const name = Studio.selected, step = Studio.flow.steps[name];
-  document.getElementById("studio-inspector-title").textContent = name ? name : "Settings";
-  if (!step) { host.textContent = "Select a node on the canvas."; return; }
-  const spec = Studio.blocks.get(step.block);
-  const child = step.flow ? Studio.subflows.get(step.flow.replace(/\.json$/, "")) : null;
-  const fields = spec ? spec.settings : child ? Object.entries(child.params || {}).map(([key, def]) => ({
-    name: key, types: [def.type || "str"], required: !Object.hasOwn(def, "default"),
-    ...(Object.hasOwn(def, "default") ? { default: def.default } : {}),
-    help: def.help || "", secret: false,
-  })) : [];
-  const form = document.createElement("form"); form.onsubmit = (event) => event.preventDefault();
-  step.settings ||= {};
-  for (const setting of fields) {
+/* Form fields for a block's settings, writing into `settings`. Options:
+ * `exclude`: a step name left out of "Use value from…" (the step itself);
+ * `extra`: more [label, value] choices for that picker (e.g. failure details);
+ * `steps`: false where step results aren't available (the failure action);
+ * `alive`: false once the form's step was replaced (a CSV upload finishing late). */
+function studioSettingsForm(settings, fields, { exclude = null, extra = [], steps = true, alive = () => true, block = "" } = {}) {
+  return fields.map((setting) => {
     const label = document.createElement("label");
     label.textContent = `${setting.name}${setting.required ? " *" : ""}`;
-    const value = step.settings?.[setting.name] ?? studioDefault(setting);
+    const value = settings[setting.name] ?? studioDefault(setting);
     const field = setting.choices?.length || setting.types.includes("bool")
       ? document.createElement("select")
       : setting.types.includes("list") || setting.types.includes("dict")
@@ -594,9 +775,9 @@ function studioInspector() {
     }
     field.value = typeof value === "string" ? value : JSON.stringify(value);
     field.placeholder = setting.secret ? "{{ env.NAME }}" : "";
-    field.onchange = () => { step.settings[setting.name] = studioValue(field.value, setting.types); studioCommit(); };
+    field.onchange = () => { settings[setting.name] = studioValue(field.value, setting.types); studioCommit(); };
     label.append(field);
-    if (step.block === "read_csv" && setting.name === "path") {
+    if (block === "read_csv" && setting.name === "path") {
       const upload = document.createElement("button");
       upload.type = "button"; upload.className = "btn"; upload.textContent = "Upload CSV…";
       const picker = document.createElement("input");
@@ -608,9 +789,9 @@ function studioInspector() {
         upload.disabled = true; upload.textContent = "Uploading…";
         try {
           const path = await studioUploadCsv(file);
-          if (Studio.flow.steps[name] === step) {
+          if (alive()) {
             field.value = path;
-            step.settings.path = path;
+            settings.path = path;
             studioCommit();
             studioMessage(`Uploaded ${file.name}. The path is ready to use.`);
           }
@@ -623,30 +804,142 @@ function studioInspector() {
       const source = document.createElement("select");
       source.setAttribute("aria-label", `Use value for ${setting.name}`);
       source.append(new Option("Use value from…", ""),
+        ...extra.map(([text, ref]) => new Option(text, ref)),
         ...Object.keys(Studio.flow.params || {}).map((key) => new Option(`Parameter: ${key}`, `{{ params.${key} }}`)),
-        ...Object.keys(Studio.flow.steps).filter((key) => key !== name)
+        ...Object.keys(steps ? Studio.flow.steps : {}).filter((key) => key !== exclude)
           .map((key) => new Option(`Step: ${key}`, `{{ ${key} }}`)));
       source.onchange = () => {
         if (!source.value) return;
         field.value = source.value;
-        step.settings[setting.name] = source.value;
+        settings[setting.name] = source.value;
         studioCommit();
+        studioRender();
       };
       label.append(source);
     }
     if (setting.help) { const hint = document.createElement("span"); hint.className = "hint"; hint.textContent = setting.help; label.append(hint); }
-    form.append(label);
+    return label;
+  });
+}
+
+/* Retries, timeout and worker kind for one block step. An empty value removes the key. */
+function studioRunOptions(step, spec) {
+  const box = document.createElement("details");
+  box.className = "studio-run-options";
+  box.open = ["retries", "timeout", "kind"].some((key) => Object.hasOwn(step, key));
+  const summary = document.createElement("summary");
+  summary.textContent = "Run options";
+  box.append(summary);
+  const number = (key, text, hint, attrs) => {
+    const label = document.createElement("label"); label.textContent = text;
+    const input = document.createElement("input");
+    input.type = "number"; Object.assign(input, attrs);
+    input.setAttribute("aria-label", text);
+    input.value = step[key] ?? "";
+    input.placeholder = key === "retries" ? "0" : "No limit";
+    input.onchange = () => {
+      const raw = input.value.trim();
+      if (raw === "" || (key === "retries" && Number(raw) === 0)) delete step[key];
+      else step[key] = Number(raw);
+      studioCommit();
+    };
+    label.append(input, Object.assign(document.createElement("span"), { className: "hint", textContent: hint }));
+    return label;
+  };
+  box.append(
+    number("retries", "Retries", "Try again this many times if the step fails.", { min: "0", step: "1" }),
+    number("timeout", "Timeout (seconds)", "Stop the step if it takes longer.", { min: "0.1", step: "any" }),
+  );
+  if (spec.kind !== "async") {
+    const label = document.createElement("label"); label.textContent = "Runs on";
+    const kind = document.createElement("select");
+    kind.setAttribute("aria-label", "Runs on");
+    kind.append(
+      new Option(`Default (${spec.kind === "cpu" ? "separate process" : "thread"})`, ""),
+      new Option("Thread: waiting on files, web, databases (io)", "io"),
+      new Option("Separate process: heavy calculation (cpu)", "cpu"),
+    );
+    kind.value = step.kind || "";
+    kind.onchange = () => {
+      if (!kind.value || kind.value === spec.kind) delete step.kind;
+      else step.kind = kind.value;
+      studioCommit();
+    };
+    label.append(kind);
+    box.append(label);
   }
+  return box;
+}
+
+/* Connections into a step: drawn ones can be removed; ones from {{ }} values are explained. */
+function studioDependencyChips(name, step) {
+  const box = document.createElement("div");
+  box.className = "studio-chips";
+  for (const dep of studioDeps(name)) {
+    const chip = document.createElement("span");
+    const drawn = (step.after || []).includes(dep);
+    chip.className = `studio-chip${drawn ? "" : " inferred"}`;
+    chip.textContent = dep;
+    if (drawn) {
+      const remove = document.createElement("button");
+      remove.type = "button"; remove.textContent = "×";
+      remove.title = `Stop running after ${dep}`;
+      remove.setAttribute("aria-label", `Remove connection from ${dep}`);
+      remove.onclick = () => studioRemoveWire({ from: dep, to: name });
+      chip.append(remove);
+    } else {
+      chip.title = studioInferredWhy(dep, name);
+    }
+    box.append(chip);
+  }
+  if (!box.childElementCount) box.append(Object.assign(document.createElement("span"), { className: "hint", textContent: "Runs first: nothing before it." }));
+  return box;
+}
+
+function studioInspector() {
+  const host = document.getElementById("studio-settings");
+  if (Studio.wire && !(Studio.wire.from in Studio.flow.steps && Studio.wire.to in Studio.flow.steps)) Studio.wire = null;
+  if (Studio.wire) {
+    document.getElementById("studio-inspector-title").textContent = `${Studio.wire.from} → ${Studio.wire.to}`;
+    host.replaceChildren(studioWirePanel());
+    return;
+  }
+  const name = Studio.selected, step = Studio.flow.steps[name];
+  document.getElementById("studio-inspector-title").textContent = name ? name : "Settings";
+  if (!step) { host.textContent = "Select a node on the canvas."; return; }
+  const spec = Studio.blocks.get(step.block);
+  const child = step.flow ? Studio.subflows.get(step.flow.replace(/\.json$/, "")) : null;
+  const fields = spec ? spec.settings : child ? Object.entries(child.params || {}).map(([key, def]) => ({
+    name: key, types: [def.type || "str"], required: !Object.hasOwn(def, "default"),
+    ...(Object.hasOwn(def, "default") ? { default: def.default } : {}),
+    help: def.help || "", secret: false,
+  })) : [];
+  const form = document.createElement("form"); form.onsubmit = (event) => event.preventDefault();
+  step.settings ||= {};
+  const rename = document.createElement("label"); rename.textContent = "Step name";
+  const renameField = document.createElement("input");
+  renameField.value = name; renameField.autocomplete = "off";
+  renameField.onchange = () => {
+    const next = renameField.value.trim();
+    if (next === name) return;
+    if (studioRenameStep(name, next)) { studioRender(); studioMessage(`Renamed ${name} to ${next} everywhere it was used.`); }
+    else renameField.value = name;
+  };
+  rename.append(renameField, Object.assign(document.createElement("span"), {
+    className: "hint", textContent: "Other steps, outputs and tests that use it follow the new name." }));
+  form.append(rename);
+  form.append(...studioSettingsForm(step.settings, fields, {
+    exclude: name, block: step.block, alive: () => Studio.flow.steps[name] === step,
+  }));
   const after = document.createElement("label"); after.textContent = "Runs after";
+  after.append(studioDependencyChips(name, step));
   const picker = document.createElement("select");
+  picker.setAttribute("aria-label", "Add a step to run before this one");
   picker.append(new Option("Add dependency…", ""), ...Object.keys(Studio.flow.steps)
     .filter((other) => other !== name && !(step.after || []).includes(other)).map((other) => new Option(other, other)));
   picker.onchange = () => { if (picker.value) { (step.after ||= []).push(picker.value); studioCommit(); studioRender(); } };
   after.append(picker); form.append(after);
-  if (step.after?.length) {
-    const list = document.createElement("p"); list.className = "hint";
-    list.textContent = `Dependencies: ${step.after.join(", ")}`; form.append(list);
-  }
+  if (spec) form.append(studioRunOptions(step, spec));
   const note = document.createElement("label"); note.textContent = "Annotation";
   const noteField = document.createElement("textarea");
   noteField.value = step.note || ""; noteField.placeholder = "Explain this step for teammates";
@@ -661,6 +954,126 @@ function studioInspector() {
   form.append(remove);
   const result = studioRunSection(name);
   host.replaceChildren(...(result ? [result, form] : [form]));
+}
+
+/* ------------------------------------------------- when the flow ends */
+const STUDIO_FAILURE_REFS = [
+  ["Failure: which step failed", "{{ failure.step }}"],
+  ["Failure: error message", "{{ failure.error }}"],
+  ["Failure: failed steps", "{{ failure.failed }}"],
+  ["Failure: skipped steps", "{{ failure.skipped }}"],
+  ["Failure: run id", "{{ failure.run_id }}"],
+];
+
+function studioFinishAction(key, title, hint) {
+  const box = document.createElement("section");
+  box.className = "studio-finish-action";
+  const heading = document.createElement("h3"); heading.textContent = title;
+  const help = Object.assign(document.createElement("p"), { className: "hint", textContent: hint });
+  const action = Studio.flow[key];
+  const picker = document.createElement("select");
+  picker.setAttribute("aria-label", `${title}: block`);
+  picker.append(new Option("Do nothing", ""), ...[...Studio.blocks.values()]
+    .map((b) => new Option(`${b.name} (${b.group || b.kind})`, b.name)));
+  picker.value = action?.block || "";
+  picker.onchange = () => {
+    const spec = Studio.blocks.get(picker.value);
+    if (!spec) delete Studio.flow[key];
+    else Studio.flow[key] = { block: spec.name, settings: Object.fromEntries(spec.settings.map((s) => [s.name, studioDefault(s)])) };
+    studioCommit(); studioRenderFinish(true);
+  };
+  box.append(heading, help, picker);
+  const spec = action && Studio.blocks.get(action.block);
+  if (spec) {
+    action.settings ||= {};
+    const form = document.createElement("div"); form.className = "studio-finish-form";
+    form.append(...studioSettingsForm(action.settings, spec.settings, {
+      extra: key === "on_failure" ? STUDIO_FAILURE_REFS : [], steps: key !== "on_failure", block: spec.name,
+      alive: () => Studio.flow[key] === action,
+    }));
+    box.append(form);
+  }
+  return box;
+}
+
+function studioFinishOutputs() {
+  const box = document.createElement("section");
+  box.className = "studio-finish-action";
+  const heading = document.createElement("h3"); heading.textContent = "Outputs";
+  const help = Object.assign(document.createElement("p"), { className: "hint",
+    textContent: "Named results of this flow. When it is used as a reusable flow, these are what the parent flow gets." });
+  box.append(heading, help);
+  const outputs = Studio.flow.outputs || {};
+  for (const [key, value] of Object.entries(outputs)) {
+    const row = document.createElement("div"); row.className = "studio-output-row";
+    const name = document.createElement("input"); name.value = key;
+    name.setAttribute("aria-label", `Output ${key} name`);
+    name.onchange = () => {
+      const next = name.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(next) || (next !== key && Object.hasOwn(outputs, next))) {
+        studioMessage("Output names must be unique and use letters, numbers or _.", true);
+        name.value = key; return;
+      }
+      Studio.flow.outputs = Object.fromEntries(Object.entries(outputs).map(([k, v]) => [k === key ? next : k, v]));
+      studioCommit(); studioRenderFinish(true);
+    };
+    const field = document.createElement("input");
+    field.value = typeof value === "string" ? value : JSON.stringify(value);
+    field.placeholder = "{{ step }} or {{ step.field }}";
+    field.setAttribute("aria-label", `Output ${key} value`);
+    field.onchange = () => { outputs[key] = studioTestValue(field.value); studioCommit(); };
+    const source = document.createElement("select");
+    source.setAttribute("aria-label", `Use value for output ${key}`);
+    source.append(new Option("Use value from…", ""),
+      ...Object.keys(Studio.flow.steps).map((step) => new Option(`Step: ${step}`, `{{ ${step} }}`)),
+      ...Object.keys(Studio.flow.params || {}).map((p) => new Option(`Parameter: ${p}`, `{{ params.${p} }}`)));
+    source.onchange = () => { if (source.value) { outputs[key] = source.value; studioCommit(); studioRenderFinish(true); } };
+    const remove = document.createElement("button"); remove.type = "button";
+    remove.className = "btn danger"; remove.textContent = "Remove";
+    remove.onclick = () => {
+      delete outputs[key];
+      if (!Object.keys(outputs).length) delete Studio.flow.outputs;
+      studioCommit(); studioRenderFinish(true);
+    };
+    row.append(name, field, source, remove);
+    box.append(row);
+  }
+  const add = document.createElement("button"); add.type = "button"; add.className = "btn";
+  add.textContent = "Add output";
+  add.onclick = () => {
+    const out = Studio.flow.outputs ||= {};
+    let number = 1;
+    while (Object.hasOwn(out, `output_${number}`)) number++;
+    const last = Object.keys(Studio.flow.steps).at(-1);
+    out[`output_${number}`] = last ? `{{ ${last} }}` : "";
+    studioCommit(); studioRenderFinish(true);
+  };
+  box.append(add);
+  return box;
+}
+
+/* `force` rebuilds even while a field in the drawer has focus (after a change made there). */
+function studioRenderFinish(force = false) {
+  const host = document.getElementById("studio-finish-editor");
+  if (!host) return;
+  const panel = document.getElementById("studio-finish-panel");
+  // a drawer that is closed doesn't need its forms; rebuilding open ones keeps them current
+  if (panel && !panel.open) {
+    const count = ["on_success", "on_failure"].filter((key) => Studio.flow[key]).length
+      + Object.keys(Studio.flow.outputs || {}).length;
+    document.getElementById("studio-finish-count").textContent = count ? `(${count} set)` : "";
+    host.replaceChildren();
+    return;
+  }
+  document.getElementById("studio-finish-count").textContent = "";
+  if (!force && host.contains(document.activeElement)) return;  // don't rebuild under the cursor
+  host.replaceChildren(
+    studioFinishAction("on_success", "When the flow succeeds",
+      "Runs once after every step succeeded, for example a Slack message or an email. It can use step results."),
+    studioFinishAction("on_failure", "When the flow fails",
+      "Runs once if the flow failed. Use the Failure values to say which step failed and why."),
+    studioFinishOutputs(),
+  );
 }
 
 async function studioValidate(save = false) {
@@ -714,7 +1127,8 @@ async function studioPartial() {
 }
 
 /* Functions the editor needs from its other script files (editor-*.js). */
-const STUDIO_PARTS = ["studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate"];
+// One line: tests/test_editor_v2.py reads this list.
+const STUDIO_PARTS = ["studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate", "studioRenameStep", "studioFocusStep"];
 
 /* If an older dashboard process can't serve the newer script files, say so instead of
  * showing an empty palette. */
@@ -779,6 +1193,7 @@ async function studioInit() {
     document.getElementById("studio-zoom-out").onclick = () => studioZoomButton(0.8);
     document.getElementById("studio-fit").onclick = studioFit;
     document.getElementById("studio-run-data").onchange = () => studioLoadRuns();
+    document.getElementById("studio-finish-panel").ontoggle = () => studioRenderFinish(true);
     document.getElementById("studio-history-panel").ontoggle = (event) => {
       if (event.target.open) studioLoadVersions();
     };
