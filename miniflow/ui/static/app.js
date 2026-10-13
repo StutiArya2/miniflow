@@ -115,27 +115,62 @@ async function getJSON(url) {
 }
 
 // ------------------------------------------------------------------- theme
-const THEMES = ["auto", "light", "dark"];
+const THEMES = ["auto", "light", "dark", "brutalist", "glass", "terminal"];
+const THEME_NAMES = {
+  auto: ["Auto", "Light or dark, following your system"],
+  light: ["Light", "Neutral greys"],
+  dark: ["Dark", "Neutral greys, dark"],
+  brutalist: ["Brutalist", "Black rules, hard shadows, loud colour"],
+  glass: ["Glass", "Frosted panels over a colour field"],
+  terminal: ["Terminal", "Green phosphor on black"],
+};
 const THEME_ICONS = {
   auto: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>',
   light: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" fill="currentColor"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   dark: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1z" fill="currentColor"/></svg>',
+  brutalist: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="9" height="9" fill="currentColor"/><rect x="5" y="5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  glass: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="currentColor" opacity=".45"/><rect x="5" y="5" width="9" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  terminal: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5l3.5 3.5L3 11.5M8.5 11.5H13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 const PLAY_ICON = '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg>';
 function applyTheme(t) {
   if (t === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
-  $("theme").title = `Theme: ${t}`;
+  $("theme").title = `Theme: ${THEME_NAMES[t][0]}`;
   $("theme").innerHTML = THEME_ICONS[t];
+  for (const item of $("theme-menu").children) item.setAttribute("aria-checked", String(item.dataset.value === t));
 }
 function initTheme() {
   let t = "auto";
   try { t = localStorage.getItem("miniflow-theme") || "auto"; } catch { /* storage blocked */ }
+  if (!THEMES.includes(t)) t = "auto";
+  const menu = $("theme-menu"), button = $("theme");
+  const setOpen = (open) => { menu.hidden = !open; button.setAttribute("aria-expanded", String(open)); };
+  menu.replaceChildren(...THEMES.map((name) => {
+    const item = h("button", {
+      type: "button", role: "menuitemradio", class: "theme-item", "data-value": name,
+      onclick: () => {
+        t = name;
+        try { localStorage.setItem("miniflow-theme", t); } catch { /* storage blocked */ }
+        applyTheme(t);
+        setOpen(false);
+        button.focus();
+      },
+    }, h("span", { class: "theme-ico" }), h("span", { class: "theme-text" },
+      h("strong", {}, THEME_NAMES[name][0]), h("small", {}, THEME_NAMES[name][1])));
+    item.querySelector(".theme-ico").innerHTML = THEME_ICONS[name];
+    return item;
+  }));
   applyTheme(t);
-  $("theme").addEventListener("click", () => {
-    t = THEMES[(THEMES.indexOf(t) + 1) % THEMES.length];
-    try { localStorage.setItem("miniflow-theme", t); } catch { /* storage blocked */ }
-    applyTheme(t);
+  button.addEventListener("click", () => setOpen(menu.hidden));
+  document.addEventListener("pointerdown", (e) => { if (!menu.hidden && !e.target.closest(".theme-picker")) setOpen(false); });
+  menu.addEventListener("keydown", (e) => {
+    const items = [...menu.children], i = items.indexOf(document.activeElement);
+    if (e.key === "Escape") { setOpen(false); button.focus(); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+    }
   });
 }
 

@@ -194,6 +194,8 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
   steps that decided the run's length; otherwise the header shows the parallel speedup (task
   time ÷ wall time).
 - **Failure alert**: each failed step with its reason, and how many later steps were skipped.
+- **Themes**: the button at the bottom of the sidebar picks Auto (follows your system), Light, Dark,
+  Brutalist, Glass or Terminal; the choice is remembered in the browser.
 - **Summary and runs**: steps done, time taken, retries, and the recent runs in the sidebar. *Follow latest run* jumps to new runs as they start.
 
 With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
