@@ -193,13 +193,13 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
   for retry backoff and a hover card for each attempt. *Critical path* highlights the chain of
   steps that decided the run's length; otherwise the header shows the parallel speedup (task
   time ÷ wall time).
-- **What went wrong**: each failed step with its reason, and how many later steps were skipped.
+- **Failure alert**: each failed step with its reason, and how many later steps were skipped.
 - **Summary and runs**: steps done, time taken, retries, and the recent runs in the sidebar. *Follow latest run* jumps to new runs as they start.
 
 With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
-set **Simulate failures** (a fault rate passed to the run as `MINIFLOW_FAIL_RATE`) and press **Run**. While it runs
+set **Simulate failures** (a fault rate passed to the run as `MINIFLOW_FAIL_RATE`) from the **New run** menu and press **Start run**. While it runs
 you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
-interrupted run gets a **Resume this run** button, which reruns only its unfinished tasks. Each
+interrupted run gets a **Resume** button, which reruns only its unfinished tasks. Each
 run is a separate `miniflow run`/`resume` process writing to the same database, and one runs at
 a time. Stopping the dashboard cancels the run it started.
 

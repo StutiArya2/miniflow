@@ -180,7 +180,11 @@ function renderRuns() {
       },
         h("span", { class: `dot d-${state}` }),
         h("span", { class: "run-name" }, humanize(r.flow)),
-        h("span", { class: "run-when" }, r.finished_at ? fmtAgo(r.started_at) : `${fmtDur(dur)}…`)));
+        h("span", { class: "run-when" }, fmtAgo(r.started_at)),
+        h("span", { class: "run-line2" },
+          h("code", {}, r.run_id.slice(0, 7)),
+          r.finished_at ? ` · ${fmtDur(dur)}` : ` · running ${fmtDur(dur)}`,
+          r.counts.FAILED ? h("span", { class: "run-bad" }, ` · ${r.counts.FAILED} failed`) : null)));
   }));
 }
 
@@ -231,7 +235,7 @@ async function control(action, body) {
     if (res.ok) {
       const result = await res.json();
       started = action !== "cancel" && !result.queued;
-      if (started) setFollow(true);
+      if (started) { setFollow(true); S.newRunOpen = false; }
     } else {
       const data = await res.json().catch(() => ({}));
       S.controlError = data.error || `${action} failed (${res.status})`;
@@ -252,7 +256,10 @@ async function control(action, body) {
 
 function renderControl() {
   const c = S.control;
-  $("control").hidden = !c;
+  $("new-run").hidden = !c;
+  if (S.controlError) S.newRunOpen = true;  // keep the reason on screen
+  $("control").hidden = !c || !S.newRunOpen;
+  $("new-run").setAttribute("aria-expanded", String(!!(c && S.newRunOpen)));
   renderEmpty();
   renderResume();
   if (!c) return;
@@ -405,17 +412,26 @@ function renderMeta() {
   const r = S.run;
   if (!r) { $("run-meta").replaceChildren(); return; }
   const dur = (r.finished_at || nowServer()) - r.started_at;
-  const about = (S.graph && S.graph.about) || {};
+  const { title, summary } = flowTitle(r.flow);
+  $("crumb-run").textContent = `${title} · ${r.run_id.slice(0, 7)}`;
   $("run-meta").replaceChildren(
     h("div", { class: "run-title" },
-      h("h1", {}, about.title || humanize(r.flow)),
-      pill(runState(), r.finished_at ? r.status.toLowerCase() : "running")),
-    h("div", { class: "run-sub" },
-      h("code", {}, r.flow), h("span", {}, `started ${fmtAgo(r.started_at)}`),
-      h("span", {}, r.finished_at ? `took ${fmtDur(dur)}` : `${fmtDur(dur)} so far`),
-      h("span", { class: "run-id", title: "Run id" }, r.run_id)),
+      h("h1", {}, title),
+      h("span", { class: `status-badge b-${runState()}` }, h("span", { class: `dot d-${runState()}` }),
+        r.finished_at ? STATUS_WORDS[r.status] || r.status.toLowerCase() : "Running")),
+    ...(summary ? [h("p", { class: "run-summary" }, summary)] : []),
   );
   renderResume();
+}
+
+const STATUS_WORDS = { SUCCESS: "Succeeded", FAILED: "Failed", INTERRUPTED: "Interrupted", RUNNING: "Running" };
+
+// Examples carry a short title ("Live earthquake monitor"); other flows only a
+// docstring sentence, which reads better as the summary under the flow's name.
+function flowTitle(flow) {
+  const about = (S.graph && S.graph.about) || {};
+  const short = about.title && about.title.length <= 48 && !/[.:]$/.test(about.title);
+  return { title: short ? about.title : humanize(flow), summary: short ? null : about.title || null };
 }
 
 function counts() {
@@ -424,8 +440,8 @@ function counts() {
   return c;
 }
 
-function stat(value, label, cls) {
-  return h("span", { class: `stat${cls ? ` ${cls}` : ""}` }, h("strong", {}, value), ` ${label}`);
+function prop(label, ...value) {
+  return h("div", { class: "prop" }, h("dt", {}, label), h("dd", {}, ...value));
 }
 
 function renderSummary() {
@@ -446,15 +462,16 @@ function renderSummary() {
   const executed = new Set(S.attempts.map((a) => a.task)).size;
   const retries = S.attempts.length - executed;
   const reused = [...S.tasks.values()].filter((t) => t.from_cache).length;
-  $("stats").replaceChildren(...[
-    stat(`${c.SUCCESS}/${total}`, "steps done"),
-    c.FAILED ? stat(c.FAILED, "failed", "bad") : null,
-    c.SKIPPED ? stat(c.SKIPPED, "skipped") : null,
-    c.RUNNING ? stat(c.RUNNING, "running") : null,
-    stat(retries, retries === 1 ? "retry" : "retries"),
-    reused ? stat(reused, "reused") : null,
-    stat(fmtDur(wall), S.run.finished_at ? "total" : "so far"),
-  ].filter(Boolean));
+  const extra = [c.FAILED && h("span", { class: "bad" }, `${c.FAILED} failed`), c.SKIPPED && `${c.SKIPPED} skipped`,
+    c.RUNNING && `${c.RUNNING} running`, reused && `${reused} reused`].filter(Boolean);
+  const started = new Date(S.run.started_at * 1000);
+  $("stats").replaceChildren(
+    prop("Started", h("span", { title: started.toLocaleString() }, started.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))),
+    prop("Duration", S.run.finished_at ? fmtDur(wall) : `${fmtDur(wall)} so far`),
+    prop("Steps", `${c.SUCCESS} of ${total} done`, ...extra.flatMap((x) => [h("span", { class: "sep" }, " · "), x])),
+    prop("Retries", String(retries)),
+    prop("Run ID", h("code", { title: S.run.run_id }, S.run.run_id.slice(0, 12))),
+  );
 }
 
 // The List view: every step in dependency order, one row each.
@@ -470,12 +487,24 @@ function renderStepList() {
       onclick: () => select(name),
       onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(name); } },
     },
-      h("td", {}, h("span", { class: `dot d-${t.state}` }), h("span", { class: "step-name" }, humanize(name)),
-        h("code", { class: "step-id" }, name)),
+      h("td", { title: name }, h("span", { class: `dot d-${t.state}` }), h("span", { class: "step-name" }, humanize(name))),
       h("td", { class: "state" }, STATE_WORDS[t.state] || t.state.toLowerCase(), t.from_cache ? " · reused" : ""),
       h("td", { class: "num" }, t.attempts > 1 ? String(t.attempts) : t.attempts ? "1" : ""),
-      h("td", { class: "num" }, took));
+      h("td", { class: "num" }, took),
+      h("td", { class: "track-col" }, stepTrack(t)));
   }));
+}
+
+// A tiny Gantt bar per row: where the step sat within the run.
+function stepTrack(t) {
+  const track = h("span", { class: "track" });
+  if (!S.run || !t.started_at) return track;
+  const t0 = S.run.started_at, t1 = Math.max(S.run.finished_at || nowServer(), t.finished_at || 0);
+  const span = Math.max(t1 - t0, 0.001);
+  const end = t.finished_at || (t.state === "RUNNING" ? nowServer() : t.started_at);
+  const left = ((t.started_at - t0) / span) * 100, width = Math.max(((end - t.started_at) / span) * 100, 0.8);
+  track.append(h("span", { class: `track-bar d-${t.state}`, style: `left:${left.toFixed(2)}%;width:${width.toFixed(2)}%` }));
+  return track;
 }
 
 // List | Graph | Timeline: one pane at a time, remembered per browser.
@@ -508,8 +537,10 @@ function select(name) {
 function renderDetails() {
   const body = $("details-body");
   const name = S.selected;
-  if (!name || !S.graph || !(name in S.graph.tasks)) {
-    body.replaceChildren(h("p", { class: "muted" }, "Select a step to see what it did."));
+  const open = !!(name && S.graph && name in S.graph.tasks);
+  document.querySelector(".workbench").classList.toggle("has-details", open);
+  if (!open) {
+    body.replaceChildren();
     return;
   }
   const info = S.graph.tasks[name];
@@ -558,6 +589,25 @@ function renderDetails() {
   body.replaceChildren(...parts.flat(Infinity).filter(Boolean));
 }
 
+// Pretty JSON that keeps short arrays and objects on one line, so a list of
+// pairs reads as ["Thu 01 Oct", 5] rather than four lines each.
+function flatJSON(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(flatJSON).join(", ")}]`;
+  return `{${Object.entries(value).map(([k, v]) => `${JSON.stringify(k)}: ${flatJSON(v)}`).join(", ")}}`;
+}
+
+function compactJSON(value, indent = "") {
+  const flat = flatJSON(value);
+  if (value === null || typeof value !== "object" || flat.length + indent.length <= 60) return flat;
+  const inner = `${indent}  `;
+  const items = Array.isArray(value)
+    ? value.map((v) => inner + compactJSON(v, inner))
+    : Object.entries(value).map(([k, v]) => `${inner}${JSON.stringify(k)}: ${compactJSON(v, inner)}`);
+  const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"];
+  return `${open}\n${items.join(",\n")}\n${indent}${close}`;
+}
+
 function renderSample(sample, count) {
   if (Array.isArray(sample) && sample.length && sample[0] && typeof sample[0] === "object" && !Array.isArray(sample[0])) {
     const rows = sample.filter((row) => row && typeof row === "object" && !Array.isArray(row));
@@ -569,21 +619,25 @@ function renderSample(sample, count) {
     return h("div", { class: "sample-scroll" }, table,
       count != null ? h("p", { class: "hint" }, `Showing ${rows.length} of ${count} items`) : null);
   }
-  return h("pre", { class: "preview box" }, JSON.stringify(sample, null, 2));
+  return h("pre", { class: "preview box json" }, compactJSON(sample));
 }
 
 function renderProblems() {
   const box = $("run-problems");
   const failed = [...S.tasks.values()].filter((task) => task.state === "FAILED");
   const skipped = [...S.tasks.values()].filter((task) => task.state === "SKIPPED").length;
-  box.hidden = failed.length === 0 && skipped === 0;
+  box.hidden = failed.length === 0;
   if (box.hidden) return;
-  $("run-problems-body").replaceChildren(...failed.map((task) =>
-    h("button", { type: "button", class: "problem-row", onclick: () => select(task.task) },
-      h("strong", {}, humanize(task.task)),
-      h("span", { class: "muted" }, firstLine(task.error) || "This step failed."))),
-    skipped ? h("p", { class: "hint problem-skipped" },
-      `${skipped} later step${skipped === 1 ? " was" : "s were"} skipped because ${failed.length === 1 ? "this step" : "these steps"} failed.`) : null);
+  $("run-problems-title").textContent = failed.length === 1
+    ? `${humanize(failed[0].task)} failed`
+    : `${failed.length} steps failed`;
+  $("run-problems-body").replaceChildren(
+    ...failed.map((task) => h("p", { class: "alert-line" },
+      failed.length > 1 ? h("strong", {}, `${humanize(task.task)}: `) : null,
+      h("code", {}, firstLine(task.error) || "This step failed."),
+      h("button", { type: "button", class: "alert-link", onclick: () => select(task.task) }, "View step"))),
+    skipped ? h("p", { class: "alert-note" },
+      `${skipped} later step${skipped === 1 ? " was" : "s were"} skipped. Fix the cause and press Resume to finish the run without redoing the steps that succeeded.`) : null);
 }
 
 async function loadSchedules() {
@@ -688,8 +742,9 @@ async function runExample(name) {
 function renderStory() {
   const about = (S.graph && S.graph.about) || {};
   const box = $("story");
-  box.hidden = !about.description;
-  if (!about.description) return;
+  const usage = /(^|\n)\s*(miniflow |uv run |python |\$ )|\s#\s/.test(about.description || "");
+  box.hidden = !about.description || usage;
+  if (box.hidden) return;
   $("story-text").textContent = about.description;
   box.title = box.classList.contains("open") ? "" : "Click to read more";
   $("story-watch").hidden = !about.watch;
@@ -703,13 +758,14 @@ function renderOutcome() {
   const used = new Set(names.flatMap((n) => S.graph.tasks[n].after));
   // The flow's chosen highlight steps, or else its final steps.
   const chosen = ((S.graph.about || {}).highlights || []).filter((n) => n in S.graph.tasks);
-  const shown = chosen.length ? chosen : names.filter((n) => !used.has(n));
+  const shown = (chosen.length ? chosen : names.filter((n) => !used.has(n)))
+    .filter((n) => !["FAILED", "SKIPPED"].includes((S.tasks.get(n) || {}).state));
+  $("outcome").hidden = shown.length === 0;
   const items = shown.map((n) => {
     const t = S.tasks.get(n) || { state: "PENDING" };
     const info = S.graph.tasks[n];
     let text;
     if (t.state === "SUCCESS") text = t.preview || "Done.";
-    else if (t.state === "FAILED" || t.state === "SKIPPED") text = firstLine(t.error) || t.state.toLowerCase();
     else text = "Not finished yet: the result appears here when this step is done.";
     return h("div", { class: "outcome-item" },
       h("div", { class: "head" },
@@ -763,6 +819,12 @@ function init() {
     if (S.run && !S.run.finished_at) { renderMeta(); renderSummary(); renderTimeline(); }
   }, 500);
   $("story").addEventListener("click", () => { $("story").classList.toggle("open"); renderStory(); });
+  $("new-run").addEventListener("click", () => { S.newRunOpen = !S.newRunOpen; S.controlError = null; renderControl(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.newRunOpen) { S.newRunOpen = false; renderControl(); } });
+  document.addEventListener("pointerdown", (e) => {
+    if (S.newRunOpen && !e.target.closest(".newrun")) { S.newRunOpen = false; renderControl(); }
+  });
+  $("details-close").addEventListener("click", () => select(null));
   initGraphView();
   initGantt();
   for (const tab of document.querySelectorAll(".seg [data-pane]")) {

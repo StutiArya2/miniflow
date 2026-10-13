@@ -37,7 +37,7 @@ Open `examples/ocean_watch.py` and point out:
 
 ## 3. Run it (2 min)
 
-In the dashboard pick **ocean_watch**, set **Simulate failures** to 20 % and press **Run**. Point at:
+In the dashboard press **New run**, pick **ocean_watch**, set **Simulate failures** to 20 % and press **Start run**. Point at:
 
 - **Graph** tab: the columns fill left to right; nothing starts before what it depends on.
 - **Timeline** tab: downloads arrive in two waves (8 threads for 12 downloads); each
@@ -63,20 +63,20 @@ to separate processes, while waiting steps share cheap threads.
 
 ## 5. Failures don't sink the job (2 min)
 
-Set **Simulate failures** to 70 % and press **Run**. Usually 2 to 5 of the 12 downloads still fail
+Press **New run**, set **Simulate failures** to 70 % and press **Start run**. Usually 2 to 5 of the 12 downloads still fail
 after 3 retries (press Run again if none do). Point at:
 
 - the failed download in red, and everything that depends on it **skipped** (grey, dashed),
   while the other batches carry on;
-- the run ends **failed**, with the reason under **What went wrong** and in **Step details** (click the red box).
+- the run ends **failed**, with the reason in the red alert at the top and in the step's details (click it in the list or graph).
 
-Now set the slider to 0 % and press **Resume this run**. Only the failed batches and the
+Now set the slider in **New run** to 0 % and press **Resume** (top right). Only the failed batches and the
 steps after them run again; everything else is marked **reused**.
 
 ## 6. Crash recovery (1 min)
 
 Press **Run**, wait until a few `detect` boxes are green, then press **■ Cancel**. The run
-ends **interrupted**, just like pressing Ctrl+C or a power cut. Press **↻ Resume this run**:
+ends **interrupted**, just like pressing Ctrl+C or a power cut. Press **Resume**:
 the finished batches are reused, because every result was saved to `miniflow.db` (SQLite)
 as soon as it was ready.
 
