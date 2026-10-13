@@ -54,6 +54,20 @@ function studioFit() {
   studioApplyView();
 }
 
+/* Select step `name` and move the view so it is in the middle of the canvas. */
+function studioFocusStep(name) {
+  const names = Object.keys(Studio.flow.steps || {});
+  if (!names.includes(name)) return;
+  Studio.wire = null;
+  studioToggleSelect(name, false);
+  const box = document.querySelector(".studio-canvas-scroll").getBoundingClientRect();
+  const pos = studioPosition(name, names.indexOf(name));
+  StudioView.x = box.width / 2 - (pos.x + STUDIO_NODE_W / 2) * StudioView.zoom;
+  StudioView.y = box.height / 2 - (pos.y + STUDIO_NODE_H / 2) * StudioView.zoom;
+  studioApplyView();
+  document.querySelector(`#studio-nodes [data-step="${name}"]`)?.classList.add("flash");
+}
+
 /* The steps a step depends on: its "after" list plus every {{ step }} it uses. */
 function studioDeps(name) {
   const step = Studio.flow.steps[name] || {};
@@ -118,6 +132,7 @@ function studioDropInit(host) {
 
 /* --------------------------------------------------------------- pointer */
 function studioBackground(target) {
+  if (target.classList?.contains("studio-wire-hit")) return false;
   return target.id === "studio-canvas" || target.id === "studio-nodes" || target.closest?.("#studio-wires")
     || target.classList?.contains("studio-canvas-scroll");
 }
@@ -157,7 +172,7 @@ function studioViewInit() {
       host.onpointerup = null;
       if (!box) {
         if (Math.abs(up.clientX - start.x) + Math.abs(up.clientY - start.y) < 3) {
-          Studio.selected = null; Studio.multi = new Set(); studioRender();  // a click on empty space
+          Studio.selected = null; Studio.multi = new Set(); Studio.wire = null; studioRender();  // a click on empty space
         }
         return;
       }

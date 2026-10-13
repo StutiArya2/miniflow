@@ -24,7 +24,7 @@ from miniflow.flowtest import run_flow_tests
 from miniflow.signature import config_signature
 from miniflow.ui.templates import TEMPLATES, build_template
 
-__all__ = ["FlowWorkspace", "WorkspaceError", "block_catalog", "flow_diff"]
+__all__ = ["FlowWorkspace", "WorkspaceError", "block_catalog", "block_group", "flow_diff"]
 
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 _VERSION = re.compile(r"\d{8}T\d{6}\d{6}(-\d+)?\Z")
@@ -93,6 +93,27 @@ class WorkspaceError(ValueError):
     """An invalid flow name or document in the editor workspace."""
 
 
+_GROUPS = {
+    "data": "Read & write",
+    "transform": "Transform",
+    "text": "Text & dates",
+    "office": "Excel",
+    "web": "Messages, AI & cloud",
+    "notify": "Email & utilities",
+    "databases": "Databases",
+    "systems": "System",
+}
+_BUILTIN = "miniflow.blocks.builtin."
+
+
+def block_group(ref: str) -> str:
+    """Palette heading for a block, from the module it is defined in (``module:qualname``)."""
+    module = ref.partition(":")[0]
+    if module.startswith(_BUILTIN):
+        return _GROUPS.get(module.removeprefix(_BUILTIN), "Other")
+    return "Plugins"
+
+
 def block_catalog() -> list[dict[str, Any]]:
     """Block settings in a form-friendly shape, without secret default values."""
     result: list[dict[str, Any]] = []
@@ -116,6 +137,7 @@ def block_catalog() -> list[dict[str, Any]]:
             {
                 "name": block.name,
                 "kind": block.kind,
+                "group": block_group(block.ref),
                 "description": block.description,
                 "settings": settings,
             }

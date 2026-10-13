@@ -62,6 +62,10 @@
       <summary>Schedules <span class="hint">Run on a timer, file arrival, or webhook call</span></summary>
         <div id="studio-schedule-editor"></div>
       </details>
+      <details id="studio-finish-panel" class="panel studio-test-panel">
+        <summary>When the flow ends <span id="studio-finish-count" class="hint"></span> <span class="hint">Send an alert on success or failure, and name the flow's outputs</span></summary>
+        <div id="studio-finish-editor"></div>
+      </details>
       <details id="studio-history-panel" class="panel studio-test-panel">
         <summary>History <span class="hint">Earlier saved versions: see what changed, or restore one</span></summary>
         <div id="studio-history"></div>
@@ -103,6 +107,7 @@
             </div>
           </div>
           <div id="studio-message" class="studio-message" role="status">Select a block to configure it.</div>
+          <ul id="studio-problems" class="studio-problems" aria-label="Problems in this flow" hidden></ul>
         </div>
         <aside class="studio-inspector panel">
           <h2 id="studio-inspector-title">Settings</h2>
