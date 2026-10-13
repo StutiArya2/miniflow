@@ -30,7 +30,10 @@
       <label class="follow" title="Switch to new runs automatically">
         <input type="checkbox" id="follow" checked> Follow latest run
       </label>
-      <button type="button" id="theme" class="icon-btn" title="Theme: auto" aria-label="Toggle colour theme"></button>
+      <div class="theme-picker">
+        <button type="button" id="theme" class="icon-btn" title="Theme" aria-label="Choose a theme" aria-haspopup="menu" aria-expanded="false" aria-controls="theme-menu"></button>
+        <div class="theme-menu" id="theme-menu" role="menu" aria-label="Theme" hidden></div>
+      </div>
     </div>
   </aside>
 
