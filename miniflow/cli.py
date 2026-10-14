@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -620,6 +621,33 @@ def _cmd_approve_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from miniflow.agent.mcp import McpServer
+    from miniflow.agent.owner import DashboardLink
+    from miniflow.agent.tools import Toolbox
+
+    flows = Path(args.flows)
+    if not flows.is_dir():
+        print(f"error: flows folder {flows} doesn't exist", file=sys.stderr)
+        return 2
+    link = None if args.read_only or args.no_runs else DashboardLink(flows, args.db)
+    box = Toolbox(flows, args.db, read_only=args.read_only, runs=link)
+    # MCP messages are UTF-8 whatever the console's encoding (Windows uses a code page).
+    stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
+    stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
+    try:
+        McpServer(box).serve(stdin, stdout)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if link is not None:
+            link.close()
+        stdout.flush()
+        stdin.detach()  # closing the wrappers would close the real stdin and stdout
+        stdout.detach()
+    return 0
+
+
 # --------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="miniflow", description=__doc__)
@@ -773,6 +801,14 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("name", help="the draft's block name")
     ab.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
     ab.set_defaults(func=_cmd_approve_block)
+    m = sub.add_parser(
+        "mcp", help="let an agent (Claude Code, Claude Desktop...) build and run flows over MCP"
+    )
+    m.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
+    m.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+    m.add_argument("--read-only", action="store_true", help="only tools that change nothing")
+    m.add_argument("--no-runs", action="store_true", help="no run tools; never start a dashboard")
+    m.set_defaults(func=_cmd_mcp)
     return parser
 
 
