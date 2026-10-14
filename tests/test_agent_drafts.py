@@ -21,6 +21,8 @@ from miniflow.agent.drafts import (
     write_draft,
 )
 from miniflow.blocks import all_blocks, load_plugins
+from miniflow.ui import DashboardServer
+from tests.test_ui import call
 
 
 def uniq() -> str:
@@ -340,3 +342,89 @@ def test_settings_require_explicit_arguments_and_builtin_types(flows, setting):
         f"@block({name!r}, settings=[{setting}])\ndef run(**kw):\n    pass\n"
     )
     assert not check_source(flows, name, source)["ok"]
+
+
+@pytest.fixture
+def dashboard(tmp_path: Path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    with DashboardServer(tmp_path / "s.db", port=0, flows=flows, allow_run=True) as server:
+        yield server, flows
+
+
+def test_the_dashboard_lists_and_approves_drafts(dashboard):
+    server, flows = dashboard
+    draft = write_draft(flows, (name := uniq()), good(name))
+    status, drafts = call(server, "GET", "/api/blocks/drafts")
+    assert status == 200
+    assert [d["sha256"] for d in drafts] == [draft["sha256"]]
+    status, result = call(
+        server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": draft["sha256"]}
+    )
+    assert status == 200
+    assert result["added"] == [name]
+    assert {"name": name, "group": "Plugins"}.items() <= next(
+        b for b in result["blocks"] if b["name"] == name
+    ).items()
+    assert call(server, "GET", "/api/blocks/drafts") == (200, [])
+
+
+def test_the_dashboard_refuses_a_stale_approval(dashboard):
+    server, flows = dashboard
+    write_draft(flows, (name := uniq()), good(name))
+    status, body = call(
+        server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": "0" * 64}
+    )
+    assert status == 409
+    assert "changed" in body["error"]
+
+
+def test_the_dashboard_discards_drafts(dashboard):
+    server, flows = dashboard
+    draft = write_draft(flows, (name := uniq()), good(name))
+    assert call(
+        server, "POST", "/api/blocks/drafts/discard", {"name": name, "sha256": draft["sha256"]}
+    ) == (200, {"discarded": name})
+    assert list_drafts(flows) == []
+
+
+def test_approval_from_another_site_is_refused(dashboard):
+    server, flows = dashboard
+    draft = write_draft(flows, (name := uniq()), good(name))
+    status, _ = call(
+        server,
+        "POST",
+        "/api/blocks/drafts/approve",
+        {"name": name, "sha256": draft["sha256"]},
+        headers={"Origin": "http://evil.example"},
+    )
+    assert status == 403
+    assert list_drafts(flows)
+
+
+def test_a_read_only_dashboard_has_no_draft_endpoints(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    with DashboardServer(tmp_path / "s.db", port=0, flows=flows, allow_run=False) as server:
+        assert call(server, "GET", "/api/blocks/drafts")[0] == 404
+        assert (
+            call(server, "POST", "/api/blocks/drafts/approve", {"name": "x", "sha256": "0"})[0]
+            == 404
+        )
+
+
+def test_dashboard_returns_failed_checks_on_approval(dashboard):
+    server, flows = dashboard
+    name = uniq()
+    source = good(name) + '\nprint("unsafe")\n'
+    (flows / "blocks").mkdir()
+    (flows / "blocks" / f"_draft_{name}.py").write_text(source)
+    status, result = call(
+        server,
+        "POST",
+        "/api/blocks/drafts/approve",
+        {"name": name, "sha256": hashlib.sha256(source.encode()).hexdigest()},
+    )
+    assert status == 409
+    assert any(not check["ok"] for check in result["checks"])
+    assert not (flows / "blocks" / f"{name}.py").exists()
