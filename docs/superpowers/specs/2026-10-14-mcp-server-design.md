@@ -25,8 +25,9 @@ miniflow/agent/mcp.py      MCP over stdio: JSON-RPC framing, initialize, tools/l
 miniflow/agent/drafts.py   block drafts: static checks, list, approve, discard (shared by the
                            MCP tools, the dashboard endpoints and the CLI)
 miniflow/agent/owner.py    finds the dashboard that runs flows for a database, or starts one
-miniflow/cli.py            new `mcp` subcommand and `blocks approve`
-miniflow/ui/server.py      draft endpoints, the owner file
+miniflow/cli.py            new `mcp` and `approve-block` subcommands
+miniflow/ui/owner.py       the owner file: claim, release, read, check it is live
+miniflow/ui/server.py      draft endpoints, `GET /api/owner`, claims the owner file
 miniflow/ui/control.py     finds flows saved by another process
 miniflow/ui/static/        the Editor's Pending blocks panel
 ```
@@ -129,10 +130,11 @@ one could mark the other's run INTERRUPTED. So exactly one process runs flows fo
 and everyone else asks it to.
 
 **The owner file.** A dashboard that can run flows (`miniflow ui --flows` or `miniflow serve`)
-creates `<db>.owner.json` with exclusive create (`open(..., "x")`). It holds the pid, port,
-flows folder and start time, and is removed on shutdown. If the file exists, the dashboard
-checks it: when that pid is alive and its `/api/control` answers, the new dashboard refuses to
-start ("a dashboard for this database is already running at http://127.0.0.1:PORT"). A file
+creates `<db>.owner.json` with exclusive create (`open(..., "x")`). It holds the pid, url,
+flows folder, start time and a random token, and is removed on shutdown. A dashboard is live
+when `GET <url>/api/owner` answers with the same token (asking over HTTP works the same on
+every platform, and a different program that reused the port won't know the token). If the
+file exists and its dashboard is live, the new dashboard refuses to start ("a dashboard for this database is already running at http://127.0.0.1:PORT"). A file
 left by a crashed process is replaced. A read-only `miniflow ui` without `--flows` needs no
 owner file and is unaffected.
 
@@ -167,20 +169,24 @@ approval.
 
 | Tool | Input | Returns |
 |---|---|---|
-| `draft_block` | `name`, `source` | static check results, and "ask the person to approve it in the Editor under Pending blocks" |
+| `draft_block` | `name`, `source`, `replace?` | static check results, and "ask the person to approve it in the Editor under Pending blocks" |
 | `list_block_drafts` | none | pending drafts with their check results |
 
-`draft_block` writes `blocks/_draft_<name>.py`. `load_plugins` skips files that start with `_`,
+`draft_block` writes `blocks/_draft_<name>.py`, but only when every check passes; otherwise it
+writes nothing and returns the failed checks so the agent can fix the source. It replaces an
+existing draft of the same name only with `replace: true`. `load_plugins` skips files that start with `_`,
 so a draft is never loaded. Static checks use `ast` only, never import:
 
 - the source parses, and has exactly one module-level function decorated with
   `@block("<name>", ...)` whose name matches;
-- `<name>` is not an existing block or draft (no silent overwrites), and the file name won't
+- `<name>` is not an existing block, and the file name won't
   shadow a module: `load_plugins` imports by file name with the folder first on `sys.path`, so
   a block named `json` or `requests` would replace that module for every later import;
 - `settings` names match the function's parameters;
-- module-level code is limited to imports, functions, classes, constants and docstrings, so
-  nothing runs just from importing the file;
+- module-level code is limited to imports (all before the first function), functions,
+  literal constants and a docstring; there are no classes, no other decorators, no calls in
+  default values or annotations, and the `@block(...)` arguments are literals and `Setting(...)`
+  calls, so nothing but imports runs when the file is imported;
 - the imports are listed in the result, so the person can see what the block uses.
 
 ### Approving in the Editor
@@ -209,7 +215,7 @@ request is refused and the panel reloads, so a draft can't be swapped between re
 approving. A draft whose checks fail can be discarded but not approved.
 
 The same approval is available in a terminal for people who use Claude Code there:
-`miniflow blocks approve NAME --flows DIR` prints the source and checks, then asks `y/N`.
+`miniflow approve-block NAME --flows DIR` prints the source and checks, then asks `y/N`.
 
 The MCP process imports an approved block on its next catalog read, as `load_plugins` imports
 new files. Changing an approved block is out of scope: `load_plugins` skips modules it has
@@ -258,7 +264,7 @@ permission prompts are the guard.
 - Drafts: a draft whose module-level code would create a file never creates it (proof it is
   never imported); each static check refuses its case, including a name that shadows `json`;
   approve with a stale `sha256` is refused; approve of a block that fails to import goes back
-  to a draft; discard; the endpoints don't exist with `--read-only`; `blocks approve` with `y`
+  to a draft; discard; the endpoints don't exist with `--read-only`; `approve-block` with `y`
   and with `n`.
 - Hypothesis: any tool given arbitrary JSON input returns an error result and never raises
   out of the server.
