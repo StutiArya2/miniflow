@@ -65,6 +65,7 @@ _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "charts.js": "text/javascript; charset=utf-8",
+    "editor-drafts.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
     "editor-history.js": "text/javascript; charset=utf-8",
     "editor-view.js": "text/javascript; charset=utf-8",

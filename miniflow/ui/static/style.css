@@ -1052,3 +1052,20 @@ body.studio-active .run-meta { visibility: hidden; }
 [data-theme="terminal"] .studio-canvas { background-color: var(--bg); background-image: radial-gradient(rgba(61,255,116,.18) 1px, transparent 1px); }
 [data-theme="terminal"] #studio-wires path { stroke: #1f8f3f; }
 [data-theme="glass"] .theme-menu, [data-theme="glass"] .control.popover { background: rgba(24, 21, 52, .94); }
+
+.studio-drafts-button { width: 100%; margin: 0 0 10px; }
+.studio-drafts-dialog { box-sizing: border-box; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 64px); border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 16px; }
+.studio-drafts-dialog::backdrop { background: rgb(0 0 0 / 0.4); }
+.studio-drafts-dialog header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.studio-drafts-dialog h2 { font-size: 15px; margin: 0; }
+.studio-draft { border-top: 1px solid var(--border); padding: 12px 0; }
+.studio-draft h3 { font-size: 14px; margin: 0 0 4px; }
+.studio-draft-checks { list-style: none; padding: 0; margin: 8px 0; font-size: 12px; }
+.studio-draft-checks .ok { color: var(--muted); }
+.studio-draft-checks .bad { color: var(--failed-ink); }
+.studio-draft-source { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; padding: 10px; font-size: 12px; white-space: pre; }
+.studio-draft-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+[data-theme="brutalist"] .studio-drafts-dialog, [data-theme="terminal"] .studio-drafts-dialog { border-radius: 0; }
+[data-theme="glass"] .studio-drafts-dialog { background: rgba(24, 21, 52, .98); }
+.studio-draft .hint { overflow-wrap: anywhere; }

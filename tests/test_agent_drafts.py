@@ -22,7 +22,7 @@ from miniflow.agent.drafts import (
 )
 from miniflow.blocks import all_blocks, load_plugins
 from miniflow.ui import DashboardServer
-from tests.test_ui import call
+from tests.test_ui import call, get
 
 
 def uniq() -> str:
@@ -428,3 +428,19 @@ def test_dashboard_returns_failed_checks_on_approval(dashboard):
     assert status == 409
     assert any(not check["ok"] for check in result["checks"])
     assert not (flows / "blocks" / f"{name}.py").exists()
+
+
+def test_the_editor_ships_the_pending_blocks_panel(dashboard):
+    server, _ = dashboard
+    status, ctype, body = get(server, "/static/editor-drafts.js")
+    assert status == 200
+    assert ctype.startswith("text/javascript")
+    assert b"function studioDraftsInit" in body
+    page = get(server, "/")[2]
+    for marker in (
+        b'id="studio-drafts"',
+        b'id="studio-drafts-dialog"',
+        b"/static/editor-drafts.js",
+    ):
+        assert marker in page
+    assert b'"studioDraftsInit"' in get(server, "/static/editor.js")[2]
