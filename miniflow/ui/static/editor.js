@@ -1187,7 +1187,7 @@ async function studioPartial() {
 
 /* Functions the editor needs from its other script files (editor-*.js). */
 // One line: tests/test_editor_v2.py reads this list.
-const STUDIO_PARTS = ["studioDraftsInit", "studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate", "studioRenameStep", "studioFocusStep"];
+const STUDIO_PARTS = ["claudeMarkdown", "studioClaudeInit", "studioDraftsInit", "studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate", "studioRenameStep", "studioFocusStep"];
 
 /* If an older dashboard process can't serve the newer script files, say so instead of
  * showing an empty palette. */

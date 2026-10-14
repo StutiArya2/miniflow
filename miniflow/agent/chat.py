@@ -51,6 +51,10 @@ _SYSTEM = (
     "Help explain, build, validate and save workflows. Run workflows only when the user asks. "
     "If the user asks you to collect preferences or essential input, ask concise questions "
     "before drafting or saving. Inspect only the tools and flows needed for the request. "
+    "Write clear, concise responses with short paragraphs and useful Markdown headings or lists. "
+    "Use tables only for compact comparisons, link to sources, and put code or diagrams in fences. "
+    "Lead with what is done and the next action; "
+    "avoid lengthy capability reports and repeated plans. "
     "The editor context names a SAVED flow; unsaved editor changes are not visible. "
     "Never claim to see unsaved edits. Block drafts need human review in Pending blocks; "
     "you cannot approve them. Do not claim that a failed action succeeded. "
@@ -439,6 +443,38 @@ class ClaudeChat:
             if self._active:
                 raise ChatError("Claude is still responding. Stop it first.", HTTPStatus.CONFLICT)
             self._messages, self._error, self._needs_login = [], "", False
+            return self.snapshot()
+
+    def restore(self, messages: object) -> dict[str, Any]:
+        """Restore a bounded conversation after an app update, into an empty chat only."""
+        if not isinstance(messages, list) or len(messages) > _MAX_HISTORY:
+            raise ChatError("Invalid conversation history.")
+        clean: list[dict[str, Any]] = []
+        for item in messages:
+            if (
+                not isinstance(item, dict)
+                or item.get("role") not in ("user", "assistant")
+                or not isinstance(item.get("text"), str)
+                or len(item["text"]) > _MAX_TEXT
+            ):
+                raise ChatError("Invalid conversation message.")
+            message: dict[str, Any] = {"role": item["role"], "text": item["text"]}
+            if item["role"] == "assistant":
+                status = item.get("status")
+                message["status"] = status if status in ("done", "error", "stopped") else "stopped"
+                tools = item.get("tools", [])
+                message["tools"] = (
+                    [t[:120] for t in tools if isinstance(t, str)][:60]
+                    if isinstance(tools, list)
+                    else []
+                )
+            clean.append(message)
+        if sum(len(m["text"]) for m in clean) > 180000:
+            raise ChatError("Conversation history is too large.")
+        with self._lock:
+            if self._closed or self._active or self._login_active or self._messages:
+                raise ChatError("Restore needs an empty, idle chat.", HTTPStatus.CONFLICT)
+            self._messages = clean
             return self.snapshot()
 
     def login(self) -> None:

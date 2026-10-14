@@ -297,6 +297,9 @@ Chat works with saved flows. Save your edits before asking Claude to change them
 **New chat** or dashboard shutdown (up to 12 exchanges). Stop cancels the current response;
 custom block drafts still need human approval in Pending blocks. The chat client has only
 MiniFlow's MCP tools, with builtin tools, custom skills, hooks and inherited MCP servers disabled.
+Assistant responses render headings, lists, tables, links and fenced code as formatted messages;
+wide tables and diagrams scroll within the message. Raw HTML is treated as text. Tool activity
+is available in a collapsed details section.
 Messages and tool results are sent to Claude under your existing account's usage terms.
 A local login check can find stored credentials even when their token has expired; an
 expired-token response directs you back to Connect Claude to sign in again. A turn can run

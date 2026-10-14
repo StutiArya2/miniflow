@@ -39,13 +39,22 @@ function claudeRender(state) {
         label.textContent = message.role === "user" ? "You" : "Claude";
         const text = document.createElement("div");
         text.className = "claude-message-text";
-        text.textContent = message.text || (message.status === "working" ? "Thinking…"
+        const content = message.text || (message.status === "working" ? "Thinking…"
           : message.status === "error" ? "This request could not be completed." : "");
+        if (message.role === "assistant") text.append(claudeMarkdown(content));
+        else text.textContent = content;
         item.append(label, text);
         if (message.tools?.length) {
-          const tools = document.createElement("p");
+          const tools = document.createElement("details");
           tools.className = "hint claude-tool-activity";
-          tools.textContent = `Tools: ${message.tools.join(" → ")}`;
+          const summary = document.createElement("summary");
+          summary.textContent = `Activity · ${message.tools.length} actions`;
+          const list = document.createElement("ul");
+          message.tools.forEach((name) => {
+            const item = document.createElement("li");
+            item.textContent = name.replaceAll("_", " "); item.title = name; list.append(item);
+          });
+          tools.append(summary, list);
           item.append(tools);
         }
         if (message.status === "stopped") {

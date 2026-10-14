@@ -30,7 +30,7 @@ def test_chat_routes_and_guards(tmp_path: Path, monkeypatch):
         for path in ("/api/agent/setup", "/api/agent/chat"):
             assert request(server, "GET", path, Host="evil.test")[0] == 403
             assert request(server, "GET", path, Origin="http://evil.test")[0] == 403
-        for action in ("send", "stop", "clear", "login"):
+        for action in ("send", "stop", "clear", "login", "restore"):
             path = "/api/agent/" + action
             assert request(server, "POST", path, {}, Origin="http://evil.test")[0] == 403
         assert request(server, "POST", "/api/agent/send", {"message": "Hello"})[0] == 400
@@ -41,6 +41,18 @@ def test_chat_routes_and_guards(tmp_path: Path, monkeypatch):
         assert request(server, "POST", "/api/agent/send", {"message": "x" * 70000})[0] == 413
         assert request(server, "POST", "/api/agent/login", {})[0] == 400
         assert request(server, "POST", "/api/agent/clear", {})[0] == 200
+        assert (
+            request(
+                server,
+                "POST",
+                "/api/agent/restore",
+                {"messages": [{"role": "user", "text": "Saved message"}]},
+            )[0]
+            == 200
+        )
+        assert (
+            request(server, "GET", "/api/agent/chat")[1]["messages"][0]["text"] == "Saved message"
+        )
         assert request(server, "POST", "/api/agent/unknown", {})[0] == 404
         assert request(server, "GET", "/api/agent/unknown")[0] == 404
 
