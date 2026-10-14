@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from http import HTTPStatus
 from pathlib import Path
@@ -48,6 +49,8 @@ _MAX_HISTORY = 24
 _SYSTEM = (
     "You are the MiniFlow workflow assistant. Work only through the supplied MiniFlow MCP tools. "
     "Help explain, build, validate and save workflows. Run workflows only when the user asks. "
+    "If the user asks you to collect preferences or essential input, ask concise questions "
+    "before drafting or saving. Inspect only the tools and flows needed for the request. "
     "The editor context names a SAVED flow; unsaved editor changes are not visible. "
     "Never claim to see unsaved edits. Block drafts need human review in Pending blocks; "
     "you cannot approve them. Do not claim that a failed action succeeded. "
@@ -113,11 +116,19 @@ class ClaudeChat:
     """One dashboard conversation, safe to access from request and worker threads."""
 
     def __init__(
-        self, folder: Path, db: Path, *, command: list[str] | None = None, timeout: float = 300
+        self,
+        folder: Path,
+        db: Path,
+        *,
+        command: list[str] | None = None,
+        timeout: float = 1800,
+        idle_timeout: float = 300,
     ) -> None:
         self.folder, self.db = folder.resolve(), db.resolve()
         self.command = command if command is not None else find_claude()
         self.timeout = timeout
+        self.idle_timeout = idle_timeout
+        self._last_activity = 0.0
         self._lock = threading.RLock()
         self._messages: list[dict[str, Any]] = []
         self._active = False
@@ -233,15 +244,39 @@ class ClaudeChat:
             self._thread.start()
             return self.snapshot()
 
-    def _timeout(self, cancel: threading.Event, proc: subprocess.Popen[bytes]) -> None:
-        with self._lock:
-            if self._active and not cancel.is_set():
-                self._error = "Claude took too long. Retry with a smaller request."
+    def _watch(
+        self,
+        cancel: threading.Event,
+        proc: subprocess.Popen[bytes],
+        done: threading.Event,
+    ) -> None:
+        """Allow sustained progress while still bounding stalled and endless turns."""
+        started = time.monotonic()
+        interval = max(0.01, min(1.0, self.timeout / 4, self.idle_timeout / 4))
+        while not done.wait(interval):
+            with self._lock:
+                if cancel.is_set() or self._proc is not proc:
+                    return
+                now = time.monotonic()
+                if now - started >= self.timeout:
+                    self._error = (
+                        "Claude reached the session time limit. Ask it to continue; "
+                        "any saved work is kept."
+                    )
+                elif now - self._last_activity >= self.idle_timeout:
+                    self._error = (
+                        "Claude made no progress for several minutes. Retry or ask it to continue; "
+                        "any saved work is kept."
+                    )
+                else:
+                    continue
                 cancel.set()
                 _kill_tree(proc)
+                return
 
     def _run(self, command: list[str], prompt: str, cancel: threading.Event) -> None:
-        timer: threading.Timer | None = None
+        done = threading.Event()
+        watcher: threading.Thread | None = None
         completed = False
         proc: subprocess.Popen[bytes] | None = None
         try:
@@ -286,8 +321,14 @@ class ClaudeChat:
                             creationflags=_CREATIONFLAGS,
                         )
                         self._proc = proc
-                    timer = threading.Timer(self.timeout, self._timeout, args=(cancel, proc))
-                    timer.start()
+                        self._last_activity = time.monotonic()
+                    watcher = threading.Thread(
+                        target=self._watch,
+                        args=(cancel, proc, done),
+                        daemon=True,
+                        name="miniflow-claude-watch",
+                    )
+                    watcher.start()
                     assert proc.stdin is not None
                     assert proc.stdout is not None
                     proc.stdin.write(prompt.encode("utf-8"))
@@ -325,8 +366,9 @@ class ClaudeChat:
                         else "Claude could not start or finish. Check the connection."
                     )
         finally:
-            if timer:
-                timer.cancel()
+            done.set()
+            if watcher:
+                watcher.join(timeout=2)
             if proc:
                 if proc.poll() is None:
                     _kill_tree(proc)
@@ -343,6 +385,7 @@ class ClaudeChat:
 
     def _event(self, event: dict[str, Any]) -> bool:
         with self._lock:
+            self._last_activity = time.monotonic()
             message = self._messages[-1]
             if event.get("type") == "stream_event":
                 inner = event.get("event")

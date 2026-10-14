@@ -120,7 +120,7 @@ def test_output_limit_and_timeout(tmp_path: Path):
         timeout=0.1,
     )
     chat.send("Hello", "")
-    assert "too long" in wait(chat)["error"]
+    assert "session time limit" in wait(chat)["error"]
     chat.shutdown()
 
 
@@ -194,3 +194,57 @@ def test_client_launch_failure_is_friendly(tmp_path: Path):
     chat.send("Hello", "")
     assert "could not start" in wait(chat)["error"]
     chat.shutdown()
+
+
+def test_active_stream_resets_idle_deadline(tmp_path: Path):
+    cmd = client(
+        tmp_path,
+        """import json,time
+for i in range(20):
+    print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta',
+        'delta':{'type':'thinking_delta','thinking':'working'}}}), flush=True)
+    time.sleep(.1)
+print(json.dumps({'type':'result','result':'Finished'}), flush=True)
+""",
+    )
+    chat = ClaudeChat(tmp_path, tmp_path / "runs.db", command=cmd, timeout=5, idle_timeout=1.5)
+    try:
+        chat.send("Build a full workflow", "")
+        result = wait(chat)
+        assert not result["error"]
+        assert result["messages"][-1]["text"] == "Finished"
+    finally:
+        chat.shutdown()
+
+
+def test_idle_deadline_stops_a_stalled_client(tmp_path: Path):
+    chat = ClaudeChat(
+        tmp_path,
+        tmp_path / "runs.db",
+        command=client(tmp_path, "import time; time.sleep(30)"),
+        timeout=5,
+        idle_timeout=0.1,
+    )
+    try:
+        chat.send("Hello", "")
+        assert "no progress" in wait(chat)["error"]
+    finally:
+        chat.shutdown()
+
+
+def test_total_deadline_applies_even_with_progress(tmp_path: Path):
+    cmd = client(
+        tmp_path,
+        """import json,time
+for i in range(100):
+    print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta',
+        'delta':{'type':'text_delta','text':'working '}}}), flush=True)
+    time.sleep(.05)
+""",
+    )
+    chat = ClaudeChat(tmp_path, tmp_path / "runs.db", command=cmd, timeout=0.5, idle_timeout=5)
+    try:
+        chat.send("Hello", "")
+        assert "session time limit" in wait(chat)["error"]
+    finally:
+        chat.shutdown()
