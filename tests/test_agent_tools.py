@@ -338,3 +338,20 @@ def test_run_tool_refuses_python_flows(box):
     with pytest.raises(ToolError, match="no flow"):
         call(box, "run_flow", {"name": "python_only"})
     assert box.runs.calls == []
+
+
+def test_invalid_json_flows_can_be_repaired_with_their_version(box):
+    (box.folder / "broken.json").write_text("{not json")
+    broken = next(f for f in call(box, "list_flows", {})["flows"] if f["name"] == "broken")
+    assert broken["valid"] is False
+    assert broken["version"] == box.workspace.file_version("broken")
+    with pytest.raises(ToolError, match="already exists") as info:
+        call(box, "save_flow", {"name": "broken", "document": BYE, "message": "repair"})
+    assert info.value.data["current_version"] == broken["version"]
+    result = call(
+        box,
+        "save_flow",
+        {"name": "broken", "document": BYE, "message": "repair", "base_version": broken["version"]},
+    )
+    assert result["saved"]
+    assert box.workspace.read("broken") == BYE

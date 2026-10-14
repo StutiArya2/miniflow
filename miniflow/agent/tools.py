@@ -263,7 +263,16 @@ def _list_flows(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
         try:
             document = box.workspace.read(name)
         except (OSError, ValueError) as exc:
-            flows.append({"name": name, "valid": False, "problems": [f"can't read it: {exc}"]})
+            flows.append(
+                {
+                    "name": name,
+                    "description": "",
+                    "valid": False,
+                    "problems": [f"can't read it: {exc}"],
+                    "schedules": [],
+                    "version": box.workspace.file_version(name),
+                }
+            )
             continue
         result = box.workspace.validate(name, document)
         doc = document if isinstance(document, dict) else {}
@@ -382,7 +391,10 @@ def _save_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     except VersionConflict as exc:
         data: dict[str, Any] = {"current_version": exc.current}
         if exc.current is not None:
-            data["current_document"] = box.workspace.read(name)
+            try:
+                data["current_document"] = box.workspace.read(name)
+            except (OSError, ValueError) as read_error:
+                data["current_document_error"] = str(read_error)
         raise ToolError(str(exc), data) from None
     if not result["valid"]:
         raise ToolError(
