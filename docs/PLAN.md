@@ -171,6 +171,17 @@ Configurable parallel run slots are implemented for different flows; repeat laun
 flow wait in the queue. The browser demo covered the schedule editor, webhook and file trigger;
 the milestone PR remains.
 
+### V4 milestone 1: agents over MCP ✅
+Design: `docs/superpowers/specs/2026-10-14-mcp-server-design.md`; plan:
+`docs/superpowers/plans/2026-10-14-mcp-server.md`.
+- `miniflow mcp`: a standard-library MCP server (`miniflow/agent/`) with tools to read blocks,
+  validate, save (with version checks), test and run flows, and draft blocks.
+- One dashboard owns each database (`<db>.owner.json`); the MCP server sends runs to it.
+- Block drafts are checked with `ast` only and approved by a person in the Editor's Pending
+  blocks panel or with `miniflow approve-block`.
+- Next: an "Ask Claude" panel in the Editor on the same tools; a conflict check in the
+  Editor's own save.
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.

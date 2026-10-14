@@ -248,6 +248,41 @@ processes are spawned and re-import your module, so cpu functions must be at mod
 thread or process, so a timed-out `io` or `cpu` task is marked failed and left to
 finish in the background. The CLI exits straight away instead of waiting for it.
 
+## Agents (MCP)
+
+`miniflow mcp` lets an agent such as Claude Code or Claude Desktop build and run flows: it
+reads the block list, writes and validates flows, saves them, runs them and reads the
+results. Connect it to Claude Code with absolute paths:
+
+```bash
+claude mcp add miniflow -- uv run --directory /path/to/miniflow miniflow mcp --flows /path/to/flows --db /path/to/miniflow.db
+```
+
+For Claude Desktop, add this to its `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "miniflow": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/miniflow", "miniflow", "mcp",
+               "--flows", "/path/to/flows", "--db", "/path/to/miniflow.db"]
+    }
+  }
+}
+```
+
+- Every save the agent makes is validated first and labelled `(agent)` in the flow's
+  history, so the Editor's History tab can undo it. It can't overwrite a flow you changed
+  after it read it, and it never sees the values in your environment files.
+- Runs go to the dashboard for that database (`miniflow serve`), in the same queue as your
+  Run button. If none is running, the agent starts one and stops it when it exits.
+- The agent can't install code. It can draft a block; you review it in the Editor under
+  **Pending blocks** (or with `miniflow approve-block NAME --flows DIR`) and approve or
+  discard it. An agent that can also run shell commands could write files itself, so for
+  Claude Code the review is a check, and its own permission prompts are the guard.
+- `--read-only` keeps only the tools that change nothing; `--no-runs` drops the run tools.
+
 ## Evaluation (spec §3.8)
 
 ```bash
