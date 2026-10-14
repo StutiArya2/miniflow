@@ -59,6 +59,8 @@ def _error(id_: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _content(payload: dict[str, Any], is_error: bool) -> dict[str, Any]:
+    # Python values such as Infinity aren't JSON numbers; expose their spelling as text.
+    payload = json.loads(_dumps(payload), parse_constant=str)
     return {
         "content": [{"type": "text", "text": _dumps(payload)}],
         "structuredContent": payload,
@@ -131,6 +133,7 @@ class McpServer:
             return _error(id_, INVALID_PARAMS, "name must be a string")
         try:
             result = call(self.box, name, params.get("arguments", {}))
+            return _result(id_, _content(result, False))
         except UnknownTool:
             return _error(id_, INVALID_PARAMS, f"unknown tool {name!r}")
         except ToolError as exc:
@@ -144,7 +147,6 @@ class McpServer:
                 id_,
                 _content({"error": f"internal error in {name}: {type(exc).__name__}: {exc}"}, True),
             )
-        return _result(id_, _content(result, False))
 
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:
         real_stdout = sys.stdout

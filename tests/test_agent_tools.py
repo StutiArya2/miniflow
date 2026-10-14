@@ -307,3 +307,34 @@ def test_unknown_runs_and_limits(box):
         call(box, "get_run", {"run_id": "nope"})
     with pytest.raises(ToolError, match="limit"):
         call(box, "list_runs", {"limit": 0})
+
+
+def test_save_returns_its_own_version_when_another_writer_saves_next(box, monkeypatch):
+    real_save = box.workspace.save
+
+    def interleave(name, document, *args, **kwargs):
+        result = real_save(name, document, *args, **kwargs)
+        real_save(name, HELLO)
+        return result
+
+    monkeypatch.setattr(box.workspace, "save", interleave)
+    saved = call(box, "save_flow", {"name": "interleaved", "document": BYE, "message": "first"})
+    assert saved["version"] != box.workspace.file_version("interleaved")
+    with pytest.raises(ToolError, match="changed since"):
+        call(
+            box,
+            "save_flow",
+            {
+                "name": "interleaved",
+                "document": BYE,
+                "message": "retry",
+                "base_version": saved["version"],
+            },
+        )
+
+
+def test_run_tool_refuses_python_flows(box):
+    (box.folder / "python_only.py").write_text('raise RuntimeError("must not run")\n')
+    with pytest.raises(ToolError, match="no flow"):
+        call(box, "run_flow", {"name": "python_only"})
+    assert box.runs.calls == []

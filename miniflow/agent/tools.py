@@ -21,6 +21,7 @@ the current document after a conflicting save. Every save an agent makes is labe
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import time
@@ -390,7 +391,9 @@ def _save_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "saved": True,
         "name": name,
-        "version": box.workspace.file_version(name),
+        "version": hashlib.sha256(
+            (json.dumps(args["document"], indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        ).hexdigest()[:16],
         "steps": result["steps"],
     }
 
@@ -492,6 +495,7 @@ def _newest_run(box: Toolbox, flow: str, since: float) -> str | None:
 def _run_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     link = _link(box)
     name = args["name"]
+    box.workspace.read(name)  # run tools accept configured JSON flows only
     since = time.time()
     active = link.run(name, args.get("environment"))
     where = {"dashboard": link.url(), "database": str(box.db)}

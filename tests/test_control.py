@@ -378,3 +378,33 @@ def test_a_symlinked_flow_saved_later_is_refused(controller, flows_dir, tmp_path
         pytest.skip("symlinks need extra rights on this system")
     with pytest.raises(ControlError):
         controller.start("linked", 0)
+
+
+def test_cached_flow_replaced_with_symlink_is_refused(controller, flows_dir, tmp_path):
+    (flows_dir / "later.json").write_text(json.dumps(LATER), "utf-8")
+    assert controller._flow_path("later") is not None
+    target = tmp_path / "external.json"
+    target.write_text(json.dumps(LATER), "utf-8")
+    (flows_dir / "later.json").unlink()
+    try:
+        (flows_dir / "later.json").symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks need extra rights")
+    with pytest.raises(ControlError):
+        controller.start("later", 0)
+
+
+def test_flow_saved_later_can_be_enqueued_and_resumed(controller, store, flows_dir):
+    (flows_dir / "later.json").write_text(json.dumps(LATER), "utf-8")
+    assert controller.enqueue("later", source="schedule:probe") == "started"
+    wait_until(lambda: idle(controller))
+    run_id = run_of(store, "later")
+    assert status_of(store, run_id) == "SUCCESS"
+    second = RunController(flows_dir, store, grace=0.5)
+    try:
+        second.flows.pop("later")  # recreate the unknown-name lookup on the resume path
+        second.resume(run_id, 0)
+        wait_until(lambda: idle(second))
+        assert status_of(store, run_of(store, "later")) == "SUCCESS"
+    finally:
+        second.shutdown()

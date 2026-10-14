@@ -156,3 +156,8 @@ def test_a_file_that_changed_since_it_was_judged_dead_is_kept(tmp_path, flows, m
     with pytest.raises(OwnerError, match=r"already running at http://127\.0\.0\.1:8"):
         claim(db, "http://127.0.0.1:1", flows)
     assert read_owner(db).token == "new"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:bad", "http://127.0.0.1:99999", "http://["])
+def test_malformed_owner_addresses_are_not_live(url):
+    assert not is_live(Owner(pid=1, url=url, flows="/x", token="t", started_at=0))

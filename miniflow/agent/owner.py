@@ -130,7 +130,7 @@ class DashboardLink:
             )
             response = conn.getresponse()
             payload = json.loads(response.read() or b"null")
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, http.client.HTTPException) as exc:
             raise LinkError(f"couldn't reach the dashboard: {exc}") from None
         finally:
             conn.close()

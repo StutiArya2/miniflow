@@ -249,6 +249,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.server.schedule_service.snapshot())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except DraftError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # the browser went away
 
