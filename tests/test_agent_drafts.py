@@ -252,6 +252,7 @@ def test_approve_rolls_back_when_the_import_exits(flows):
     assert not (flows / "blocks" / f"{name}.py").exists()
     assert path.exists()
     assert name not in sys.modules
+    assert name not in {b.name for b in all_blocks()}
 
 
 def test_a_symlinked_blocks_folder_is_a_failed_check(flows, tmp_path_factory):
@@ -262,3 +263,80 @@ def test_a_symlinked_blocks_folder_is_a_failed_check(flows, tmp_path_factory):
         pytest.skip("symlinks aren't supported")
     report = check_source(flows, (name := uniq()), good(name))
     assert "blocks folder" in failed(report)
+
+
+@pytest.mark.parametrize("annotation", ["trap[str]", "trap | int", "trap.attr"])
+def test_annotations_cannot_execute_imported_objects(flows, annotation):
+    name = uniq()
+    source = good(name).replace(
+        "from miniflow.blocks", "from somewhere import trap\nfrom miniflow.blocks"
+    )
+    source = source.replace("def run(text, times):", f"def run(text: {annotation}, times):")
+    assert not check_source(flows, name, source)["ok"]
+
+
+def test_postponed_custom_annotations_are_allowed(flows):
+    name = uniq()
+    source = good(name).replace(
+        "from miniflow.blocks", "from __future__ import annotations\nfrom miniflow.blocks"
+    )
+    source = source.replace("def run(text, times):", "def run(text: Custom[str] | None, times):")
+    assert check_source(flows, name, source)["ok"]
+
+
+def test_module_getattr_is_refused(flows):
+    name = uniq()
+    source = good(name) + '\ndef __getattr__(name):\n    print("side effect")\n'
+    assert not check_source(flows, name, source)["ok"]
+
+
+def test_nested_draft_import_is_refused(flows):
+    name = uniq()
+    source = good(name).replace(
+        "return text * min(times, LIMIT)", "import _draft_other\n    return text"
+    )
+    assert not check_source(flows, name, source)["ok"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "import miniflow.blocks as m\n@m.block('NAME')\ndef other():\n    pass\n",
+        "from miniflow.blocks import Setting as block\n",
+        "def helper():\n    global Setting\n    Setting = 1\n",
+        "try:\n    pass\nexcept Exception:\n    pass\n",
+        "if True:\n    pass\n",
+        "class Other:\n    pass\n",
+        "match 1:\n    case 1:\n        pass\n",
+        "type Alias = int\n",
+        "del block\n",
+        "from os import system as __getattr__\n",
+    ],
+)
+def test_fresh_bypasses_are_refused(flows, extra):
+    name = uniq()
+    assert not check_source(flows, name, good(name) + extra.replace("NAME", name))["ok"]
+
+
+@pytest.mark.parametrize("kind", ["cpu", "async"])
+def test_typed_blocks_helpers_and_third_party_imports_pass(flows, kind):
+    name = uniq()
+    source = good(name).replace("from miniflow.blocks", "import requests\nfrom miniflow.blocks")
+    source = source.replace("settings=[", f"kind={kind!r}, settings=[")
+    source = source.replace("def run(text, times):", "def run(text: str, times: int):")
+    if kind == "async":
+        source = source.replace("def run(", "async def run(")
+    source += "\ndef helper(value: int = 1) -> int:\n    return value\n"
+    assert check_source(flows, name, source)["ok"]
+
+
+@pytest.mark.parametrize(
+    "setting", ["Setting(**{})", "Setting('x', type=block)", "Setting('x', type=Setting)"]
+)
+def test_settings_require_explicit_arguments_and_builtin_types(flows, setting):
+    name = uniq()
+    source = (
+        "from miniflow.blocks import block, Setting\n"
+        f"@block({name!r}, settings=[{setting}])\ndef run(**kw):\n    pass\n"
+    )
+    assert not check_source(flows, name, source)["ok"]
