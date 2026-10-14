@@ -226,7 +226,7 @@ def test_the_installed_file_is_the_approved_bytes(flows, monkeypatch):
 
     def swap_after_check(*args):
         report = real(*args)
-        (flows / "blocks" / f"_draft_{name}.py").write_text(swapped)
+        (flows / "blocks" / f"_draft_{name}.py").write_bytes(swapped.encode("utf-8"))
         return report
 
     monkeypatch.setattr(drafts, "check_source", swap_after_check)
@@ -241,7 +241,7 @@ def test_approve_rolls_back_when_the_import_exits(flows):
     # the checks would refuse this, so install the draft file directly
     (flows / "blocks").mkdir()
     path = flows / "blocks" / f"_draft_{name}.py"
-    path.write_text(source)
+    path.write_bytes(source.encode("utf-8"))
     sha = hashlib.sha256(source.encode()).hexdigest()
     import miniflow.agent.drafts as drafts
 
@@ -419,7 +419,7 @@ def test_dashboard_returns_failed_checks_on_approval(dashboard):
     name = uniq()
     source = good(name) + '\nprint("unsafe")\n'
     (flows / "blocks").mkdir()
-    (flows / "blocks" / f"_draft_{name}.py").write_text(source)
+    (flows / "blocks" / f"_draft_{name}.py").write_bytes(source.encode("utf-8"))
     status, result = call(
         server,
         "POST",
