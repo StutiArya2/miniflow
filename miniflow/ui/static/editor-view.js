@@ -125,6 +125,7 @@ function studioDropInit(host) {
     const p = studioCanvasPoint(event);
     const at = { x: p.x - STUDIO_NODE_W / 2, y: p.y - STUDIO_NODE_H / 2 };  // centre the step on the pointer
     if (item.kind === "flow") studioAddFlow(item.name, at);
+    else if (item.kind === "custom") studioAddCustom(item.name, at);
     else studioAdd(item.name, at);
     studioMessage(`${Studio.selected} added where you dropped it.`);
   });

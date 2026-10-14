@@ -4,6 +4,7 @@
 const Studio = {
   blocks: new Map(), flow: { steps: {} }, name: "", selected: null,
   subflows: new Map(), environments: [],
+  customBlocks: new Map(),
   connecting: null, problems: [], dirty: false, visible: false,
   testIndex: 0,
   section: "examples",       // which top tab is current: examples, runs or editor
@@ -67,7 +68,8 @@ function studioShow(show) {
 function studioNav(section) {
   Studio.section = section;
   document.body.dataset.view = section;
-  for (const name of ["examples", "runs", "editor"]) {
+  document.getElementById("custom-builder").hidden = section !== "custom";
+  for (const name of ["examples", "runs", "editor", "custom"]) {
     const tab = document.getElementById(`view-${name}`);
     if (name === section) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
@@ -199,6 +201,18 @@ function studioAdd(blockName, at, after) {
     : `${name} added. Configure it in the settings panel.`);
 }
 
+function studioAddCustom(blockName, at) {
+  const spec = Studio.customBlocks.get(blockName);
+  if (!spec) return;
+  let name = blockName, index = 2;
+  while (Object.hasOwn(Studio.flow.steps, name)) name = `${blockName}_${index++}`;
+  const settings = Object.fromEntries(Object.entries(spec.inputs).map(([key, def]) =>
+    [key, Object.hasOwn(def, "default") ? def.default : studioDefault({ types: [def.type || "str"] })]));
+  Studio.flow.steps[name] = { custom_block: blockName, settings, position: studioSlot(at, Object.keys(Studio.flow.steps).length) };
+  Studio.selected = name; Studio.multi = new Set(); studioCommit(); studioRender();
+  studioMessage(`${name} added. Configure its inputs in the settings panel.`);
+}
+
 /* Palette groups in a fixed order; anything else (plugins) comes last. */
 const STUDIO_GROUPS = ["Read & write", "Transform", "Text & dates", "Excel", "Messages, AI & cloud", "Email & utilities", "Databases", "System"];
 
@@ -235,6 +249,16 @@ function studioPalette() {
       return [heading, ...groups.get(group).map(studioBlockButton)];
     }));
   if (!items.length) list.replaceChildren(Object.assign(document.createElement("p"), { className: "hint", textContent: "No block matches." }));
+  document.getElementById("studio-custom-blocks").replaceChildren(...[...Studio.customBlocks.values()]
+    .filter((block) => `${block.name} ${block.description}`.toLowerCase().includes(query))
+    .map((block) => {
+      const button = document.createElement("button"); button.type = "button";
+      button.className = "studio-block"; button.textContent = block.name;
+      const detail = document.createElement("small"); detail.textContent = block.description || block.kind;
+      button.append(detail); button.onclick = () => studioAddCustom(block.name);
+      studioDraggable(button, "custom", block.name);
+      return button;
+    }));
   document.getElementById("studio-subflows").replaceChildren(...[...Studio.subflows.values()]
     .filter((flow) => flow.name !== Studio.name && `${flow.name} ${flow.description}`.toLowerCase().includes(query))
     .map((flow) => {
@@ -394,7 +418,7 @@ function studioRender() {
     node.style.left = `${pos.x}px`; node.style.top = `${pos.y}px`;
     if (step.note) node.title = step.note;
     const title = document.createElement("strong"); title.textContent = name;
-    const kind = document.createElement("small"); kind.textContent = step.block || `Sub-flow: ${step.flow}`;
+    const kind = document.createElement("small"); kind.textContent = step.block || (step.custom_block ? `Custom: ${step.custom_block}` : `Sub-flow: ${step.flow}`);
     const input = document.createElement("button"); input.className = "input-port";
     input.type = "button"; input.title = "Connect a preceding block"; input.textContent = "●";
     input.onclick = (event) => { event.stopPropagation(); studioConnect(name); };
@@ -939,8 +963,13 @@ function studioInspector() {
   document.getElementById("studio-inspector-title").textContent = name ? name : "Settings";
   if (!step) { host.textContent = "Select a node on the canvas."; return; }
   const spec = Studio.blocks.get(step.block);
+  const custom = step.custom_block ? Studio.customBlocks.get(step.custom_block) : null;
   const child = step.flow ? Studio.subflows.get(step.flow.replace(/\.json$/, "")) : null;
-  const fields = spec ? spec.settings : child ? Object.entries(child.params || {}).map(([key, def]) => ({
+  const fields = spec ? spec.settings : custom ? Object.entries(custom.inputs || {}).map(([key, def]) => ({
+    name: key, types: [def.type || "str"], required: !Object.hasOwn(def, "default"),
+    ...(Object.hasOwn(def, "default") ? { default: def.default } : {}),
+    help: def.help || "", secret: !!def.secret, file: !!def.file,
+  })) : child ? Object.entries(child.params || {}).map(([key, def]) => ({
     name: key, types: [def.type || "str"], required: !Object.hasOwn(def, "default"),
     ...(Object.hasOwn(def, "default") ? { default: def.default } : {}),
     help: def.help || "", secret: false,
@@ -1220,11 +1249,12 @@ async function studioInit() {
     return;
   }
   try {
-    const [catalog, , environments, subflows, templates] = await Promise.all([
+    const [catalog, , environments, subflows, templates, customBlocks] = await Promise.all([
       studioApi("/api/blocks"), studioList(), studioApi("/api/environments"),
-      studioApi("/api/subflows"), studioApi("/api/templates"),
+      studioApi("/api/subflows"), studioApi("/api/templates"), studioApi("/api/custom-blocks"),
     ]);
     Studio.blocks = new Map(catalog.map((block) => [block.name, block]));
+    Studio.customBlocks = new Map(customBlocks.map((block) => [block.name, block]));
     Studio.environments = environments;
     Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
     document.getElementById("studio-environment").replaceChildren(
@@ -1233,6 +1263,10 @@ async function studioInit() {
       new Option(`${item.name} — ${item.description}`, item.name)));
     document.getElementById("view-editor").hidden = false;
     document.getElementById("view-editor").onclick = () => studioShow(true);
+    document.getElementById("view-custom").hidden = false;
+    document.getElementById("view-custom").onclick = () => { studioGo("custom"); customRender(); };
+    document.getElementById("studio-custom-create").onclick = () => { studioGo("custom"); customNew(); };
+    customInit(catalog, customBlocks);
     document.getElementById("studio-flow").onchange = (event) => studioOpen(event.target.value);
     document.getElementById("studio-new").onclick = studioNew;
     document.getElementById("studio-use-template").onclick = studioUseTemplate;
