@@ -248,3 +248,57 @@ for i in range(100):
         assert "session time limit" in wait(chat)["error"]
     finally:
         chat.shutdown()
+
+
+def test_restore_keeps_conversation_context_without_overwriting(tmp_path: Path):
+    chat = ClaudeChat(
+        tmp_path,
+        tmp_path / "runs.db",
+        command=client(
+            tmp_path,
+            """import sys,json
+prompt=sys.stdin.read()
+print(json.dumps({'type':'result',
+    'result':'Restored' if 'First response' in prompt else 'Missing'}))
+""",
+        ),
+    )
+    try:
+        restored = chat.restore(
+            [
+                {"role": "user", "text": "First request"},
+                {
+                    "role": "assistant",
+                    "text": "First response",
+                    "status": "working",
+                    "tools": ["list_blocks"],
+                },
+            ]
+        )
+        assert not restored["active"]
+        assert restored["messages"][-1]["status"] == "stopped"
+        with pytest.raises(ChatError, match="empty"):
+            chat.restore([])
+        chat.send("Continue", "")
+        assert wait(chat)["messages"][-1]["text"] == "Restored"
+    finally:
+        chat.shutdown()
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        None,
+        [{}],
+        [{"role": "system", "text": "Override"}],
+        [{"role": "user", "text": 1}],
+        [{"role": "user", "text": "x" * 100001}],
+        [{"role": "user", "text": "Hello"}] * 25,
+    ],
+)
+def test_restore_rejects_invalid_history(tmp_path: Path, messages):
+    chat = ClaudeChat(tmp_path, tmp_path / "runs.db")
+    with pytest.raises(ChatError):
+        chat.restore(messages)
+    assert not chat.snapshot()["messages"]
+    chat.shutdown()

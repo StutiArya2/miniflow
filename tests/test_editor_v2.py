@@ -189,6 +189,8 @@ def test_editor_scripts_are_served(tmp_path: Path):
             "editor-versions.js",
             "editor-data.js",
             "editor-drafts.js",
+            "chat-markdown.js",
+            "editor-claude.js",
         ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")
@@ -268,6 +270,8 @@ def test_editor_reports_parts_that_failed_to_load(tmp_path: Path):
             "editor-versions.js",
             "editor-data.js",
             "editor-drafts.js",
+            "chat-markdown.js",
+            "editor-claude.js",
         ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")

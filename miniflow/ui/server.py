@@ -68,6 +68,7 @@ _STATIC = {
     "charts.js": "text/javascript; charset=utf-8",
     "editor-drafts.js": "text/javascript; charset=utf-8",
     "editor-claude.js": "text/javascript; charset=utf-8",
+    "chat-markdown.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
     "editor-history.js": "text/javascript; charset=utf-8",
     "editor-view.js": "text/javascript; charset=utf-8",
@@ -307,7 +308,7 @@ class _Handler(BaseHTTPRequestHandler):
         controller = self.server.controller
         try:
             if parts[:2] == ["api", "agent"] and self.server.chat is not None:
-                body = self._control_body(65536)
+                body = self._control_body(_MAX_FLOW_BODY if parts[-1] == "restore" else 65536)
                 chat = self.server.chat
                 if parts == ["api", "agent", "send"]:
                     self._send_json(
@@ -318,6 +319,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(chat.snapshot())
                 elif parts == ["api", "agent", "clear"]:
                     self._send_json(chat.clear())
+                elif parts == ["api", "agent", "restore"]:
+                    self._send_json(chat.restore(body.get("messages")))
                 elif parts == ["api", "agent", "login"]:
                     chat.login()
                     self._send_json({"started": True}, HTTPStatus.ACCEPTED)
