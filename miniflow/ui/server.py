@@ -7,6 +7,8 @@ Endpoints:
 ``GET /api/runs``                  recent runs with a count of tasks per state
 ``GET /api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
 ``GET /api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /api/owner``                 ``{"token": ...}``: proves this server owns its database
+                                   (:mod:`miniflow.ui.owner`)
 ``GET /api/control``               flows the dashboard can start and the active run
 ``POST /api/control/run``          ``{"flow": name, "fail_rate": 0..1}``: start a run
 ``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
@@ -48,6 +50,7 @@ from miniflow.store import RunRecord, StateStore
 from miniflow.ui.author import FlowWorkspace, WorkspaceError
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
+from miniflow.ui.owner import Owner, claim, release
 from miniflow.ui.schedules import ScheduleService
 
 __all__ = ["DashboardServer"]
@@ -211,6 +214,9 @@ class _Handler(BaseHTTPRequestHandler):
                         HTTPStatus.BAD_REQUEST,
                         f"flow JSON is invalid at line {exc.lineno}, column {exc.colno}",
                     )
+            elif parts == ["api", "owner"]:
+                owner = self.server.owner
+                self._send_json({"token": None if owner is None else owner.token})
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -605,6 +611,7 @@ class DashboardServer(ThreadingHTTPServer):
         except OSError:
             self.store.close()
             raise
+        self.owner: Owner | None = None
         self.stopping = threading.Event()
         self._thread: threading.Thread | None = None
         last_error: OSError | None = None
@@ -645,6 +652,13 @@ class DashboardServer(ThreadingHTTPServer):
             name="miniflow-ui",
         )
         self._thread.start()
+        if self.controller is not None and self.workspace is not None:
+            # Claimed only once serving, so another process checking the file gets an answer.
+            try:
+                self.owner = claim(self.store.path, self.url, self.workspace.folder)
+            except BaseException:
+                self.stop()
+                raise
         if self.schedule_service is not None:
             self.schedule_service.start()
         return self
@@ -654,6 +668,9 @@ class DashboardServer(ThreadingHTTPServer):
             self.schedule_service.stop()
         if self.controller is not None:
             self.controller.shutdown()
+        if self.owner is not None:
+            release(self.store.path, self.owner)
+            self.owner = None
         self.stopping.set()
         if self._thread is not None:
             self.shutdown()
