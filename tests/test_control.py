@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections.abc import Callable
@@ -346,3 +347,34 @@ def test_json_flows_are_listed_and_run(tmp_path, store):
         assert store.load_completed(run_id) == {"say": {"level": "info", "message": "rate 0.5"}}
     finally:
         c.shutdown()
+
+
+# ------------------------------------------------------ flows saved later
+LATER = {"steps": {"hello": {"block": "log", "settings": {"message": "hi"}}}}
+
+
+def test_flow_saved_after_startup_can_be_run(controller, store, flows_dir):
+    (flows_dir / "later.json").write_text(json.dumps(LATER), "utf-8")
+    controller.start("later", 0)
+    wait_until(lambda: idle(controller))
+    assert status_of(store, run_of(store, "later")) == "SUCCESS"
+    assert "later" in controller.flows
+
+
+@pytest.mark.parametrize("name", ["../outside", "_private", "a/b", "", "later.json"])
+def test_names_that_are_not_flows_in_the_folder_are_still_refused(controller, flows_dir, name):
+    (flows_dir.parent / "outside.json").write_text(json.dumps(LATER), "utf-8")
+    (flows_dir / "_private.json").write_text(json.dumps(LATER), "utf-8")
+    with pytest.raises(ControlError):
+        controller.start(name, 0)
+
+
+def test_a_symlinked_flow_saved_later_is_refused(controller, flows_dir, tmp_path):
+    target = tmp_path / "real.json"
+    target.write_text(json.dumps(LATER), "utf-8")
+    try:
+        (flows_dir / "linked.json").symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks need extra rights on this system")
+    with pytest.raises(ControlError):
+        controller.start("linked", 0)
