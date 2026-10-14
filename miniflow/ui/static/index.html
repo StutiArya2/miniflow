@@ -51,29 +51,37 @@
         <label>Save note <input id="studio-save-message" autocomplete="off" placeholder="What changed? (optional)"></label>
         <button type="button" id="studio-save" class="btn">Save</button>
         <button type="button" id="studio-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Run</button>
+        <button type="button" id="studio-stop" class="btn danger" disabled title="Available while this flow is running">■ Stop workflow</button>
         <button type="button" id="studio-partial" class="btn">Run up to selected</button>
       </div>
-      <div class="studio-drawers">
-      <details id="studio-test-panel" class="panel studio-test-panel">
-        <summary>Flow tests <span class="hint">Sample inputs and expected results</span></summary>
-        <div id="studio-test-editor"></div>
-      </details>
-      <details id="studio-schedule-panel" class="panel studio-test-panel">
-      <summary>Schedules <span class="hint">Run on a timer, file arrival, or webhook call</span></summary>
-        <div id="studio-schedule-editor"></div>
-      </details>
-      <details id="studio-finish-panel" class="panel studio-test-panel">
-        <summary>When the flow ends <span id="studio-finish-count" class="hint"></span> <span class="hint">Send an alert on success or failure, and name the flow's outputs</span></summary>
-        <div id="studio-finish-editor"></div>
-      </details>
-      <details id="studio-history-panel" class="panel studio-test-panel">
-        <summary>History <span class="hint">Earlier saved versions: see what changed, or restore one</span></summary>
-        <div id="studio-history"></div>
-      </details>
-      <details id="studio-params-panel" class="panel studio-test-panel">
-        <summary>Parameters <span class="hint">Values you can reuse as {{ params.name }} in block settings</span></summary>
-        <div id="studio-params-editor"></div>
-      </details>
+      <div class="studio-sections">
+        <div class="studio-section-tabs" role="tablist" aria-label="Workflow settings">
+          <button type="button" id="studio-test-tab" role="tab" aria-controls="studio-test-panel" aria-selected="true" tabindex="0">Flow tests</button>
+          <button type="button" id="studio-schedule-tab" role="tab" aria-controls="studio-schedule-panel" aria-selected="false" tabindex="-1">Schedules</button>
+          <button type="button" id="studio-finish-tab" role="tab" aria-controls="studio-finish-panel" aria-selected="false" tabindex="-1">When the flow ends <span id="studio-finish-count" class="hint"></span></button>
+          <button type="button" id="studio-history-tab" role="tab" aria-controls="studio-history-panel" aria-selected="false" tabindex="-1">History</button>
+          <button type="button" id="studio-params-tab" role="tab" aria-controls="studio-params-panel" aria-selected="false" tabindex="-1">Parameters</button>
+        </div>
+        <section id="studio-test-panel" class="panel studio-section-panel" role="tabpanel" aria-labelledby="studio-test-tab" tabindex="0">
+          <p class="hint">Sample inputs and expected results</p>
+          <div id="studio-test-editor"></div>
+        </section>
+        <section id="studio-schedule-panel" class="panel studio-section-panel" role="tabpanel" aria-labelledby="studio-schedule-tab" tabindex="0" hidden>
+          <p class="hint">Run on a timer, file arrival, or webhook call</p>
+          <div id="studio-schedule-editor"></div>
+        </section>
+        <section id="studio-finish-panel" class="panel studio-section-panel" role="tabpanel" aria-labelledby="studio-finish-tab" tabindex="0" hidden>
+          <p class="hint">Send an alert on success or failure, and name the flow's outputs</p>
+          <div id="studio-finish-editor"></div>
+        </section>
+        <section id="studio-history-panel" class="panel studio-section-panel" role="tabpanel" aria-labelledby="studio-history-tab" tabindex="0" hidden>
+          <p class="hint">Earlier saved versions: see what changed or restore one</p>
+          <div id="studio-history"></div>
+        </section>
+        <section id="studio-params-panel" class="panel studio-section-panel" role="tabpanel" aria-labelledby="studio-params-tab" tabindex="0" hidden>
+          <p class="hint">Values you can reuse as {{ params.name }} in block settings</p>
+          <div id="studio-params-editor"></div>
+        </section>
       </div>
       <div class="studio-layout">
         <aside class="studio-palette panel">
@@ -129,7 +137,7 @@
       <div class="bar-actions">
         <span id="ctl-active" class="ctl-active" aria-live="polite" hidden></span>
         <button type="button" id="ctl-resume" class="btn" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v2.6h-2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Resume</button>
-        <button type="button" id="ctl-cancel" class="btn danger" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg> Cancel</button>
+        <button type="button" id="ctl-cancel" class="btn danger" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg> Stop workflow</button>
         <div class="newrun">
           <button type="button" id="new-run" class="btn primary" aria-expanded="false" aria-controls="control" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg> New run</button>
           <section id="control" class="control popover" aria-label="Start a run" hidden>
