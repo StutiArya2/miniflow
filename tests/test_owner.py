@@ -125,3 +125,34 @@ def test_release_leaves_someone_elses_claim(tmp_path, flows):
 @pytest.mark.parametrize("url", ["https://127.0.0.1:1", "http://example.com:80", "nonsense"])
 def test_only_local_http_addresses_are_probed(url):
     assert not is_live(Owner(pid=1, url=url, flows="/x", token="t", started_at=0.0))
+
+
+def test_an_old_unreadable_file_is_replaced(tmp_path, flows):
+    db = tmp_path / "s.db"
+    db.touch()
+    owner_path(db).write_text("{", "utf-8")
+    old = time.time() - 60
+    os.utime(owner_path(db), (old, old))
+    with DashboardServer(db, port=0, flows=flows) as server:
+        assert read_owner(db).url == server.url
+
+
+def test_a_file_that_changed_since_it_was_judged_dead_is_kept(tmp_path, flows, monkeypatch):
+    import miniflow.ui.owner as owner_module
+
+    db = tmp_path / "s.db"
+    db.touch()
+    write_owner(db, "http://127.0.0.1:9", token="dead")
+    calls: list[int] = []
+
+    def fake_is_live(owner: Owner, timeout: float = 2.0) -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            write_owner(db, "http://127.0.0.1:8", token="new")  # another dashboard won
+            return False
+        return True
+
+    monkeypatch.setattr(owner_module, "is_live", fake_is_live)
+    with pytest.raises(OwnerError, match=r"already running at http://127\.0\.0\.1:8"):
+        claim(db, "http://127.0.0.1:1", flows)
+    assert read_owner(db).token == "new"
