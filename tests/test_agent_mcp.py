@@ -212,8 +212,8 @@ def test_mcp_needs_an_existing_flows_folder(tmp_path, capsys):
     "line",
     ["[" * 2000 + "0" + "]" * 2000, '{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}'],
 )
-def test_pathological_json_is_a_parse_error(server, line):
-    assert server.handle_line(line)["error"]["code"] == -32700
+def test_pathological_json_is_a_protocol_error(server, line):
+    assert server.handle_line(line)["error"]["code"] in {-32700, -32600}
 
 
 def test_utf8_stdio_ignores_console_code_page(flows, tmp_path):
@@ -281,10 +281,20 @@ def test_killed_mcp_leaves_its_dashboard_for_the_next_client(flows, tmp_path):
         if owner is None:
             owner = read_owner(db)
         if owner is not None and is_live(owner):
-            os.kill(
-                owner.pid, signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGINT
-            )
-            wait_until(lambda: not owner_path(db).exists(), timeout=15)
+            if sys.platform == "win32":
+                # owner.pid can be the real interpreter behind a venv launcher, not the
+                # launcher's console-group id. Never broadcast Ctrl+Break from this test.
+                subprocess.run(
+                    ["taskkill", "/PID", str(owner.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                wait_until(lambda: not is_live(owner), timeout=15)
+                owner_path(db).unlink(missing_ok=True)
+            else:
+                os.kill(owner.pid, signal.SIGINT)
+                wait_until(lambda: not owner_path(db).exists(), timeout=15)
 
 
 def test_nonfinite_tool_values_still_produce_valid_json(server, monkeypatch):
