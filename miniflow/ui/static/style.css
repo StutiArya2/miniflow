@@ -142,6 +142,7 @@ button { font: inherit; color: inherit; }
 main { min-width: 0; padding: 0 0 48px; display: flex; flex-direction: column; font-size: 13.5px; }
 body:not([data-view="examples"]) .view-examples,
 body:not([data-view="runs"]) .view-runs { display: none !important; }
+body[data-view="custom"] #app > :not(#custom-builder) { display: none !important; }
 #dashboard { display: flex; flex-direction: column; }
 .panel { background: none; border: 0; padding: 20px 32px; min-width: 0; border-bottom: 1px solid var(--border); }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -562,6 +563,49 @@ body.studio-active .run-meta { visibility: hidden; }
 .studio-inspector textarea { min-height: 76px; resize: vertical; font-family: var(--mono); }
 .studio-inspector .hint { font-weight: 400; }
 .studio-inspector .btn { margin-top: 8px; }
+
+/* The custom block builder has its own canvas and state, separate from workflow editing. */
+.custom-builder { display: flex; flex-direction: column; min-width: 0; }
+.custom-builder input, .custom-builder select, .custom-builder textarea { box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 7px; padding: 8px 10px; font: inherit; }
+.custom-builder label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.custom-builder textarea { font-family: var(--mono); resize: vertical; }
+.custom-head, .custom-meta, .custom-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.custom-head > div { margin-right: auto; }
+.custom-head label { min-width: 190px; }
+.custom-meta label { flex: 1; min-width: 180px; }
+.custom-columns { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(360px, 2.5fr) minmax(220px, 1fr); min-height: 500px; }
+.custom-columns > * { border-right: 1px solid var(--border); }
+.custom-columns > *:last-child { border-right: 0; }
+.custom-columns h2, .custom-test h2 { font-size: 15px; margin-bottom: 8px; }
+.custom-inputs, .custom-outputs { padding: 20px; }
+.custom-inputs > .btn, .custom-outputs > .btn { margin-top: 14px; }
+.custom-input-row, .custom-output-row { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.custom-input-row { grid-template-columns: 1fr 80px; }
+.custom-input-row > input:nth-of-type(n+2), .custom-input-row > .custom-check, .custom-input-row > button { grid-column: 1 / -1; }
+.custom-check { display: flex !important; align-items: center; gap: 6px !important; }
+.custom-check input { width: auto; }
+.custom-work { padding: 20px; min-width: 0; }
+.custom-tools h2 { margin-right: auto; }
+.custom-tools label { min-width: 230px; flex: 1; }
+.custom-canvas { position: relative; display: flex; flex-wrap: wrap; align-content: start; gap: 36px; min-height: 290px; padding: 28px; margin-top: 16px; border: 1px solid var(--border); border-radius: 9px; background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px; }
+.custom-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.custom-wires path { fill: none; stroke: var(--focus); stroke-width: 2; }
+.custom-node { position: relative; display: grid; align-content: start; gap: 2px; width: 170px; min-height: 75px; padding: 12px; text-align: left; border: 1px solid var(--border); border-left: 3px solid var(--focus); border-radius: 8px; background: var(--panel); color: var(--text); cursor: pointer; }
+.custom-node.selected { outline: 2px solid var(--focus); }
+.custom-node small { color: var(--muted); overflow-wrap: anywhere; }
+.custom-step-settings { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding-top: 16px; }
+.custom-step-settings h3 { width: 100%; }
+.custom-step-settings label { min-width: 160px; flex: 1; }
+.custom-step-settings select { max-width: 240px; }
+#custom-python textarea { min-height: 330px; margin-top: 12px; tab-size: 4; }
+#custom-python label { max-width: 260px; margin-top: 18px; }
+.custom-test { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.custom-test h2 { width: 100%; }
+.custom-test label { flex: 1; min-width: 210px; }
+.custom-test textarea { min-height: 76px; }
+#custom-message { width: 100%; white-space: pre-wrap; }
+#custom-message.error { color: var(--failed-ink); }
+@media (max-width: 1000px) { .custom-columns { grid-template-columns: 1fr; } .custom-columns > * { border-right: 0; border-bottom: 1px solid var(--border); } }
 #studio-test-editor { display: grid; gap: 12px; margin-top: 12px; }
 .studio-test-toolbar { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
 .studio-test-toolbar label { display: grid; gap: 4px; font-size: 12px; }

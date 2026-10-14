@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from miniflow.blocks import BlockError, all_blocks, get_block, load_plugins, type_name
+from miniflow.custom_blocks import CustomBlockLibrary
 from miniflow.executors import ExecutorRouter
 from miniflow.flowfile import Flow, FlowFileError, load_json_flow
 from miniflow.flowtest import run_flow_tests
@@ -556,7 +557,20 @@ def _default_text(value: Any) -> str:
 def _cmd_blocks(args: argparse.Namespace) -> int:
     for folder in args.blocks or []:
         load_plugins(folder)
+    custom = CustomBlockLibrary().catalog()
     if args.name:
+        chosen = next((item for item in custom if item["name"] == args.name), None)
+        if chosen is not None:
+            title = f"{chosen['name']} (custom {chosen['kind']})"
+            print(f"{title}\n  {chosen['description']}\n\nsettings:")
+            for name, setting in chosen["inputs"].items():
+                need = (
+                    "required"
+                    if "default" not in setting
+                    else f"default {_default_text(setting['default'])}"
+                )
+                print(f"  {name}: {setting.get('type', 'str')}, {need}")
+            return 0
         spec = get_block(args.name)
         print(f"{spec.name} ({spec.kind})\n  {spec.description}\n\nsettings:")
         width = max((len(s.name) for s in spec.settings), default=4) + 2
@@ -573,10 +587,12 @@ def _cmd_blocks(args: argparse.Namespace) -> int:
             for line in extra:
                 print(f"  {'':<{width}}{line}")
         return 0
-    blocks = all_blocks()
-    width = max(len(b.name) for b in blocks) + 2
+    blocks = [b for b in all_blocks() if not b.name.startswith("miniflow_custom_")]
+    width = max([*(len(b.name) for b in blocks), *(len(b["name"]) for b in custom)]) + 2
     for b in blocks:
         print(f"{b.name:<{width}}{b.kind:<7}{b.description}")
+    for item in custom:
+        print(f"{item['name']:<{width}}{'custom':<7}{item['description']}")
     return 0
 
 

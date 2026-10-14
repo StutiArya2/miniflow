@@ -79,6 +79,7 @@ _TOP = (
 )  # fmt: skip
 _STEP_FIELDS = (
     "block",
+    "custom_block",
     "flow",
     "settings",
     "after",
@@ -88,7 +89,7 @@ _STEP_FIELDS = (
     "note",
     "position",
 )
-_PARAM_FIELDS = ("type", "default", "help")
+_PARAM_FIELDS = ("type", "default", "help", "secret", "file")
 _RESERVED = ("params", "env", "failure")
 _FAILURE_FIELDS = ("step", "error", "failed", "skipped", "run_id")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -397,6 +398,13 @@ def _subflow_settings(
         here = f"{where}, setting {key!r}"
         used.extend(x for x in checker.refs(here, value, steps, values, me=name) if x not in used)
         definition = declared[key]
+        if (
+            isinstance(definition, dict)
+            and definition.get("secret")
+            and value not in ("", None)
+            and not (isinstance(value, str) and _ENV_ONLY.fullmatch(value))
+        ):
+            checker.add(f"{here}: secrets can't be written in the flow; use {{{{ env.NAME }}}}")
         if isinstance(definition, dict) and _is_literal(value):
             kind = _PARAM_TYPES.get(definition.get("type", "str"))
             if kind is not None:
@@ -416,6 +424,7 @@ def _expand_subflow(
     declared: Mapping[str, Any],
     dependencies: list[str],
     parent_values: Mapping[str, Any],
+    base_dir: str | None = None,
 ) -> list[Task]:
     """Inline a checked child DAG, preserving its visible step names in the run."""
     binder = f"{name}.params"
@@ -436,6 +445,8 @@ def _expand_subflow(
     for child_task in child.dag.tasks.values():
         after = [f"{name}.{dep}" for dep in child_task.after]
         kwargs = dict(child_task.kwargs)
+        if base_dir is not None and "base_dir" in kwargs:
+            kwargs["base_dir"] = base_dir
         # Direct child steps and nested binders need this flow's live parameters.
         # A nested step already receives parameters from its own binder.
         if "inputs" in kwargs and "__params__" not in kwargs["inputs"]:
@@ -573,7 +584,52 @@ def load_json_flow(
                 c.add(f"{where}: unknown field {key!r}.{_suggest(key, _STEP_FIELDS)}")
         child: Flow | None = None
         block: BlockSpec | None = None
-        if "flow" in raw:
+        custom_base_dir: str | None = None
+        child_declared: Any = None
+        if "custom_block" in raw:
+            if "flow" in raw or "block" in raw:
+                c.add(f"{where}: use only one of 'custom_block', 'flow' or 'block'")
+                continue
+            from miniflow.custom_blocks import CustomBlockError, CustomBlockLibrary
+
+            library = CustomBlockLibrary()
+            try:
+                definition = library.get(str(raw["custom_block"]))
+            except CustomBlockError as exc:
+                c.add(f"{where}: {exc}")
+                continue
+            if definition["kind"] == "visual":
+                child_path = library.root / definition["name"] / f"{definition['revision']}.json"
+                try:
+                    child = load_json_flow(
+                        child_path,
+                        blocks=blocks,
+                        _source={
+                            "description": definition["description"],
+                            "params": definition["inputs"],
+                            "steps": definition["steps"],
+                            "outputs": definition["outputs"],
+                        },
+                        _stack=(*_stack, p),
+                        _nested=True,
+                    )
+                except FlowFileError as exc:
+                    for problem in exc.problems:
+                        c.add(f"{where} (custom block {definition['name']}): {problem}")
+                child_declared = definition["inputs"]
+                deps = _subflow_settings(
+                    c, where, raw.get("settings", {}), child_declared, names, values, name
+                )
+                custom_base_dir = str(p.parent)
+            else:
+                try:
+                    internal, _ = library.python_spec(definition)
+                except CustomBlockError as exc:
+                    c.add(f"{where}: {exc}")
+                    continue
+                block = get_block(internal)
+                deps = c.settings(where, block, raw.get("settings", {}), names, values, me=name)
+        elif "flow" in raw:
             if "block" in raw:
                 c.add(f"{where}: use either 'block' or 'flow', not both")
             child_path = p.parent / str(raw["flow"])
@@ -587,7 +643,6 @@ def load_json_flow(
                 except FlowFileError as exc:
                     for problem in exc.problems:
                         c.add(f"{where} ({raw['flow']}): {problem}")
-            child_declared: Any = None
             if child is not None:
                 child_declared = json.loads(child.path.read_text(encoding="utf-8")).get(
                     "params", {}
@@ -629,7 +684,9 @@ def load_json_flow(
         if len(c.problems) > before:
             continue  # keep checking, but don't build tasks for a broken flow
         if child is not None:
-            tasks.extend(_expand_subflow(name, raw, child, child_declared, deps, values))
+            tasks.extend(
+                _expand_subflow(name, raw, child, child_declared, deps, values, custom_base_dir)
+            )
             continue
         assert block is not None
         tasks.append(

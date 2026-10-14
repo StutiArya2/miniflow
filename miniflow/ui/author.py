@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from miniflow.blocks import REQUIRED, all_blocks, load_plugins
+from miniflow.custom_blocks import CustomBlockLibrary
 from miniflow.flowfile import FlowFileError, load_json_flow
 from miniflow.flowtest import run_flow_tests
 from miniflow.signature import config_signature
@@ -118,6 +119,8 @@ def block_catalog() -> list[dict[str, Any]]:
     """Block settings in a form-friendly shape, without secret default values."""
     result: list[dict[str, Any]] = []
     for block in all_blocks():
+        if block.name.startswith("miniflow_custom_"):
+            continue  # revision-specific names are shown through the custom catalog
         settings = []
         for setting in block.settings:
             types = setting.type if isinstance(setting.type, tuple) else (setting.type,)
@@ -180,6 +183,9 @@ class FlowWorkspace:
         if plugins.is_dir():
             load_plugins(plugins)
         return block_catalog()
+
+    def custom_blocks(self) -> builtins.list[dict[str, Any]]:
+        return CustomBlockLibrary().catalog()
 
     def environments(self) -> builtins.list[str]:
         """Only names are sent to the browser; environment values stay on disk."""

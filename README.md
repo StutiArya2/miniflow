@@ -94,6 +94,10 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
     `pip install psycopg[binary]` or `pip install pymysql`; without it the block says so.
 - **Plugin blocks**: a `@block` function in a `blocks/` folder next to the flow (see
   `examples/blocks/currency.py`) is available to every flow in that folder.
+- **Custom blocks**: open **Custom blocks** in the dashboard to create a reusable block
+  with a no-code canvas or an advanced Python function. Custom blocks are available
+  to all of your MiniFlow workspaces on this computer. Python code runs locally with
+  your user permissions.
 - **Parameters and environments**: `--param min=50`, or `--environment prod` for the values
   in `environments/prod.json` (and secrets from `environments/prod.env`).
 - **Checked before running**: every problem is reported at once, in plain language, with
@@ -106,11 +110,29 @@ miniflow run examples/sales_report.json --environment dev
 miniflow ui --flows examples                   # edit, validate, save and run in the browser
 ```
 
-The top bar has three tabs, **Examples**, **Runs** and **Editor**, always visible and with the
-current one highlighted; the MiniFlow logo also goes back to Examples.
+The sidebar has four sections: **Examples**, **Runs**, **Editor** and **Custom blocks**.
+The current one is highlighted; the MiniFlow logo also goes back to Examples.
 
 Use the **Editor** tab in the dashboard to open a visual canvas. Add blocks from the
 searchable palette, connect them, edit settings, validate and save the JSON flow, then run it.
+Use **Custom blocks** to name a block, define its inputs and outputs, and choose a build
+method. In the no-code builder, add built-in steps, set their inputs with
+`{{ params.input_name }}`, and connect them with **Runs after**. Set an output to a
+step result such as `{{ filter }}`. In the Python builder, write the function body
+using your input names as variables and return a dictionary of named outputs, such
+as `return {"result": text.upper()}`. Validate, save, and run a sample test; the
+block then appears in the Editor palette. Editing a block affects future runs, while
+an active run keeps its starting version. A workflow step using one looks like:
+
+```json
+{"custom_block": "keep_large", "settings": {"rows": "{{ read_csv }}"}}
+```
+
+The library is stored at `~/Library/Application Support/MiniFlow/custom_blocks/`
+on macOS, `%LOCALAPPDATA%/MiniFlow/custom_blocks/` on Windows, and
+`$XDG_DATA_HOME/miniflow/custom_blocks/` on Linux (falling back to
+`~/.local/share/miniflow/custom_blocks/`). Set `MINIFLOW_CUSTOM_BLOCKS_DIR` to use
+a different library, for example when testing.
 For a `read_csv` block, click **Upload CSV…** beside its path to choose a local file. MiniFlow
 copies it into the flow workspace's `uploads/` folder and fills in the path automatically
 (maximum 10 MB). You can then save and run the flow normally.
