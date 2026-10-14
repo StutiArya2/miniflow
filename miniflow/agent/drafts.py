@@ -4,7 +4,8 @@ An agent may only *draft* a block: :func:`write_draft` stores ``blocks/_draft_<n
 the flows folder. :func:`miniflow.blocks.load_plugins` skips files whose name starts with
 ``_``, so a draft is never imported. :func:`check_source` reads the source with :mod:`ast`
 only; it never imports or runs it. A person approves a draft (the Editor's Pending blocks
-panel, or ``miniflow approve-block``), which renames it to ``blocks/<name>.py`` and loads it.
+panel, or ``miniflow approve-block``), which installs the reviewed bytes as
+``blocks/<name>.py`` and loads it.
 
     check_source(folder, name, source) -> {"ok", "checks": [{"check", "ok", "detail"}], "imports"}
     write_draft(folder, name, source, *, replace=False) -> draft   only if every check passes
@@ -15,7 +16,7 @@ panel, or ``miniflow approve-block``), which renames it to ``blocks/<name>.py`` 
 
 ``folder`` is the flows folder. ``sha256`` is the hex digest of the source the person was
 shown; :func:`approve` and :func:`discard` refuse a draft that has changed since. A block
-that fails to load when approved is renamed back to a draft. Every failure is a
+that fails to load when approved stays a draft and its installation is removed. Every failure is a
 :class:`DraftError`; its ``report`` holds the check results when they are the reason.
 
 The checks make importing an approved file run nothing but its imports and the ``@block``
@@ -51,10 +52,16 @@ _NAME = re.compile(r"[a-z][a-z0-9_]{0,39}\Z")
 _PREFIX = "_draft_"
 _MAX_SOURCE = 100_000
 _KINDS = ("io", "cpu", "async")
-_RESERVED = frozenset(
-    {"Setting", "block", "str", "int", "float", "bool", "list", "dict", "object", "__getattr__"}
-)
-_ALLOWED_NAMES = _RESERVED - {"__getattr__"}
+_TYPES = frozenset({"str", "int", "float", "bool", "list", "dict", "object"})
+_ALLOWED_NAMES = _TYPES | {"Setting", "block"}
+_RESERVED = _ALLOWED_NAMES | {
+    "__getattr__",
+    "__name__",
+    "__package__",
+    "__spec__",
+    "__loader__",
+    "__builtins__",
+}
 _LOCK = threading.Lock()
 
 
@@ -82,7 +89,7 @@ def _annotation_ok(node: ast.AST | None, *, postponed: bool = False) -> bool:
     if isinstance(node, ast.Constant):
         return node.value is None or isinstance(node.value, str)
     if isinstance(node, ast.Name):
-        return postponed or node.id in _RESERVED - {"block", "Setting", "__getattr__"}
+        return postponed or node.id in _TYPES
     if isinstance(node, ast.Attribute):
         return (
             postponed
@@ -101,7 +108,8 @@ def _annotation_ok(node: ast.AST | None, *, postponed: bool = False) -> bool:
         ):
             return False  # only Literal[...] may subscript with a constant, e.g. not environ['X']
         return _annotation_ok(base, postponed=postponed) and all(
-            _annotation_ok(p, postponed=postponed) for p in parts
+            (_annotation_ok(p, postponed=postponed) or (literal_type and _literal(p)))
+            for p in parts
         )
     if isinstance(node, ast.BinOp):
         return (
@@ -134,11 +142,7 @@ def _plain_block_args(call: ast.Call) -> bool:
                 type_node = n.args[1] if len(n.args) > 1 else _keyword(n, "type")
                 if type_node is not None:
                     types = type_node.elts if isinstance(type_node, ast.Tuple) else [type_node]
-                    if not all(
-                        isinstance(t, ast.Name)
-                        and t.id in _RESERVED - {"block", "Setting", "__getattr__"}
-                        for t in types
-                    ):
+                    if not all(isinstance(t, ast.Name) and t.id in _TYPES for t in types):
                         return False
         if isinstance(n, ast.Call):
             if n is not call and not (isinstance(n.func, ast.Name) and n.func.id == "Setting"):
@@ -427,10 +431,17 @@ def write_draft(folder: Path, name: str, source: str, *, replace: bool = False) 
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(source.encode("utf-8"))
-            os.replace(temporary, path)
-        except BaseException:
+            if replace:
+                os.replace(temporary, path)
+            else:
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    raise DraftError(
+                        f"there is already a draft called {name!r}; pass replace to change it"
+                    ) from None
+        finally:
             Path(temporary).unlink(missing_ok=True)
-            raise
         return _entry(folder, path)
 
 
@@ -464,29 +475,39 @@ def approve(folder: Path, name: str, sha256: str) -> list[str]:
         if not report["ok"]:
             raise DraftError("the draft doesn't pass its checks", report)
         target = blocks / f"{name}.py"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            fd = os.open(target, flags, 0o644)
-        except FileExistsError:
-            raise DraftError(f"blocks/{name}.py already exists") from None
+        fd, temporary = tempfile.mkstemp(dir=blocks, prefix=".approve-", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as handle:
-                handle.write(data)  # the exact bytes whose hash the person approved
-            added = load_plugins(blocks)
-        except BaseException as exc:
-            sys.modules.pop(name, None)
-            target.unlink(missing_ok=True)
-            if isinstance(exc, BlockError):
-                raise DraftError(
-                    f"the block failed to load, so it is a draft again: {exc}"
-                ) from None
-            raise
+                handle.write(data)  # exactly the bytes the person approved
+            try:
+                cache = blocks / "__pycache__"
+                if cache.is_symlink():
+                    raise DraftError("the blocks bytecode cache folder can't be a symlink")
+                for cached in cache.glob(f"{name}.*.pyc"):
+                    cached.unlink(missing_ok=True)
+                os.link(temporary, target)  # publish complete bytes without replacing any file
+            except FileExistsError:
+                raise DraftError(f"blocks/{name}.py already exists") from None
+            except OSError as exc:
+                raise DraftError(f"couldn't install the approved block: {exc}") from None
+            try:
+                added = load_plugins(blocks)
+            except BaseException as exc:
+                sys.modules.pop(name, None)
+                target.unlink(missing_ok=True)
+                if isinstance(exc, BlockError):
+                    raise DraftError(
+                        f"the block failed to load, so it is a draft again: {exc}"
+                    ) from None
+                raise
+        finally:
+            Path(temporary).unlink(missing_ok=True)
         try:
             if hashlib.sha256(draft.read_bytes()).hexdigest() == sha256:
                 draft.unlink()  # a changed draft stays as a new pending draft
         except FileNotFoundError:
             pass
-        return added
+        return sorted(set(added) | {name})
 
 
 def discard(folder: Path, name: str, sha256: str) -> None:

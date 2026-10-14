@@ -147,7 +147,12 @@ class RunController:
         files = sorted([*folder.glob("*.py"), *folder.glob("*.json")], key=lambda p: p.name)
         self.flows: dict[str, Path] = {}
         for p in files:
-            if p.is_file() and not p.name.startswith("_"):
+            if (
+                p.is_file()
+                and not p.is_symlink()
+                and not p.name.startswith("_")
+                and p.resolve().parent == folder.resolve()
+            ):
                 self.flows.setdefault(p.stem, p.resolve())  # a .py and .json of one name: .json
         self.flows = dict(sorted(self.flows.items()))
         self.folder = folder.resolve()
@@ -342,15 +347,25 @@ class RunController:
         """The flow's file. A JSON flow saved after startup (by the Editor of another
         process, or an agent) is found here and remembered."""
         path = self.flows.get(flow)
-        if path is not None or not _ENV_NAME.fullmatch(flow) or flow.startswith("_"):
-            return path
+        if not _ENV_NAME.fullmatch(flow) or flow.startswith("_"):
+            return None
+        if path is not None:
+            return (
+                path
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and path.resolve().parent == self.folder
+                )
+                else None
+            )
         candidate = self.folder / f"{flow}.json"
         if not candidate.is_file() or candidate.is_symlink():
             return None
         if candidate.resolve().parent != self.folder:
             return None
         self.add_flow(flow, candidate)
-        return self.flows[flow]
+        return candidate.resolve()
 
     def _can_start(self, flow: str) -> bool:
         return len(self._children) < self.max_concurrent and all(

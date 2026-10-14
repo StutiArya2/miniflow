@@ -226,12 +226,13 @@ def load_plugins(folder: str | Path) -> list[str]:
     for file in sorted(path.glob("*.py")):
         if file.name.startswith("_") or file.stem in sys.modules:
             continue
-        registered = dict(_REGISTRY)
+        registered = set(_REGISTRY)
         try:
             importlib.import_module(file.stem)
         except BaseException as exc:
-            _REGISTRY.clear()
-            _REGISTRY.update(registered)
+            for name, spec in list(_REGISTRY.items()):
+                if name not in registered and spec.fn.__module__ == file.stem:
+                    del _REGISTRY[name]
             sys.modules.pop(file.stem, None)
             if not isinstance(exc, Exception):
                 raise

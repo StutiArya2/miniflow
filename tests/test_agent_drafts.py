@@ -479,3 +479,106 @@ def test_approve_block_with_closed_stdin_keeps_the_draft(flows, monkeypatch, cap
     monkeypatch.setattr("builtins.input", closed)
     assert main(["approve-block", name, "--flows", str(flows)]) == 1
     assert list_drafts(flows)
+
+
+def test_failed_plugin_keeps_registered_imported_dependencies(flows):
+    bad, helper = "aaa_" + uniq(), "zzz_" + uniq()
+    blocks = flows / "blocks"
+    blocks.mkdir()
+    (blocks / f"{helper}.py").write_text(good(helper))
+    (blocks / f"{bad}.py").write_text(f"import {helper}\n" + good(bad) + "\nraise SystemExit(3)\n")
+    with pytest.raises(SystemExit):
+        load_plugins(blocks)
+    names = {b.name for b in all_blocks()}
+    assert bad not in names
+    assert helper in names
+
+
+def test_approval_publishes_only_a_complete_file(flows, monkeypatch):
+    import miniflow.agent.drafts as drafts_module
+
+    draft = write_draft(flows, (name := uniq()), good(name))
+    original = drafts_module.os.fdopen
+    target = flows / "blocks" / f"{name}.py"
+
+    class ObservedWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def write(self, data):
+            assert not target.exists(), "catalog readers can see the file before it is complete"
+            return self.handle.write(data)
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+    monkeypatch.setattr(drafts_module.os, "fdopen", lambda *a: ObservedWriter(original(*a)))
+    assert approve(flows, name, draft["sha256"]) == [name]
+    assert target.read_text() == good(name)
+
+
+@pytest.mark.parametrize("name", ["__name__", "__builtins__", "__spec__", "__package__"])
+def test_module_metadata_cannot_be_rebound(flows, name):
+    block_name = uniq()
+    assert not check_source(
+        flows,
+        block_name,
+        good(block_name).replace(
+            "from miniflow.blocks", f'{name} = "elsewhere"\nfrom miniflow.blocks'
+        ),
+    )["ok"]
+
+
+def test_postponed_literal_annotations_are_allowed(flows):
+    name = uniq()
+    source = good(name).replace(
+        "from miniflow.blocks",
+        "from __future__ import annotations\nfrom typing import Literal\nfrom miniflow.blocks",
+    )
+    source = source.replace("def run(text, times):", 'def run(text: Literal[1, "one"], times):')
+    assert check_source(flows, name, source)["ok"]
+
+
+def test_approval_never_uses_bytecode_from_an_earlier_failed_draft(flows, monkeypatch):
+    import miniflow.agent.drafts as drafts_module
+
+    name = uniq()
+    missing = "missing_" + uuid.uuid4().hex
+    bad = good(name).replace("from miniflow.blocks", f"import {missing}\nfrom miniflow.blocks")
+    good_source = bad.replace(f"import {missing}", "import os #" + " " * (len(missing) - 4))
+    assert len(bad) == len(good_source)
+    real_load = drafts_module.load_plugins
+
+    def same_timestamp(folder):
+        target = folder / f"{name}.py"
+        if target.exists():
+            drafts_module.os.utime(target, (1_700_000_000, 1_700_000_000))
+        return real_load(folder)
+
+    monkeypatch.setattr(drafts_module, "load_plugins", same_timestamp)
+    first = write_draft(flows, name, bad)
+    with pytest.raises(DraftError, match="failed to load"):
+        approve(flows, name, first["sha256"])
+    second = write_draft(flows, name, good_source, replace=True)
+    assert approve(flows, name, second["sha256"]) == [name]
+
+
+def test_another_process_creating_a_draft_is_not_overwritten(flows, monkeypatch):
+    import miniflow.agent.drafts as drafts_module
+
+    name = uniq()
+    race_source = good(name).replace("LIMIT = 3", "LIMIT = 9")
+    original = drafts_module.tempfile.mkstemp
+
+    def concurrent_create(*args, **kwargs):
+        (flows / "blocks" / f"_draft_{name}.py").write_text(race_source)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(drafts_module.tempfile, "mkstemp", concurrent_create)
+    with pytest.raises(DraftError, match="already"):
+        write_draft(flows, name, good(name))
+    assert (flows / "blocks" / f"_draft_{name}.py").read_text() == race_source

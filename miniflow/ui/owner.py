@@ -66,15 +66,18 @@ def read_owner(db: str | os.PathLike[str]) -> Owner | None:
 
 
 def is_live(owner: Owner, timeout: float = 2.0) -> bool:
-    url = urlsplit(owner.url)
-    if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost") or not url.port:
+    try:
+        url = urlsplit(owner.url)
+        if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost") or not url.port:
+            return False
+    except ValueError:
         return False
     conn = http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
     try:
         conn.request("GET", "/api/owner")
         response = conn.getresponse()
         body = json.loads(response.read() or b"null")
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return False
     finally:
         conn.close()

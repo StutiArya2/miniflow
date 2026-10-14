@@ -285,3 +285,20 @@ def test_killed_mcp_leaves_its_dashboard_for_the_next_client(flows, tmp_path):
                 owner.pid, signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGINT
             )
             wait_until(lambda: not owner_path(db).exists(), timeout=15)
+
+
+def test_nonfinite_tool_values_still_produce_valid_json(server, monkeypatch):
+    monkeypatch.setitem(
+        server.box.tools,
+        "nonfinite",
+        tools.Tool(
+            "nonfinite",
+            "test",
+            {"type": "object", "properties": {}, "required": []},
+            "read",
+            lambda box, args: {"value": float("inf")},
+        ),
+    )
+    result = server.handle(req("tools/call", {"name": "nonfinite"}))["result"]
+    assert result["structuredContent"]["value"] == "Infinity"
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
