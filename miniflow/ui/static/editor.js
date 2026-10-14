@@ -80,6 +80,9 @@ function studioNav(section) {
 function studioGo(section) {
   studioShow(false);
   studioNav(section);
+  if (section === "custom") {
+    try { history.replaceState(null, "", "#custom"); } catch { /* sandboxed */ }
+  }
   if (section === "examples") document.getElementById("gallery").open = true;
   window.scrollTo({ top: 0 });
 }
@@ -1294,6 +1297,7 @@ async function studioInit() {
     studioViewInit();
     studioHistoryReset();
     if (location.hash === "#editor") studioShow(true);
+    else if (location.hash === "#custom") studioGo("custom");
   } catch { /* read-only dashboard has no editor */ }
 }
 
