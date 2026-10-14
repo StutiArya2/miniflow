@@ -13,8 +13,9 @@ claims ``<db>.owner.json`` once it is serving, and removes it when it stops:
 
 The file is created with exclusive create, so two dashboards starting together can't both
 win. A file whose dashboard doesn't answer with its token (it crashed, or another program
-now has the port) is replaced. A fresh file that can't be read yet belongs to a dashboard
-that is writing it, so the claim is refused rather than taken.
+now has the port) is replaced, but only if it is unchanged since it was judged dead. A
+fresh file that can't be read yet belongs to a dashboard that is writing it, so the claim is
+refused rather than taken.
 """
 
 from __future__ import annotations
@@ -83,28 +84,50 @@ def is_live(owner: Owner, timeout: float = 2.0) -> bool:
 def claim(db: str | os.PathLike[str], url: str, flows: str | os.PathLike[str]) -> Owner:
     path = owner_path(db)
     owner = Owner(os.getpid(), url, str(Path(flows).resolve()), secrets.token_hex(16), time.time())
-    for _ in range(2):
+    for _ in range(3):
         try:
             with path.open("x", encoding="utf-8") as f:
-                f.write(json.dumps(asdict(owner)))
+                try:
+                    f.write(json.dumps(asdict(owner)))
+                except OSError:
+                    f.close()
+                    path.unlink(missing_ok=True)
+                    raise
             return owner
         except FileExistsError:
             current = read_owner(db)
+            stale: str | tuple[int, int]
             if current is None:
                 try:
-                    age = time.time() - path.stat().st_mtime
+                    seen = path.stat()
                 except FileNotFoundError:
                     continue  # it was just released; try again
-                if age < _STARTING_SECONDS:
+                if time.time() - seen.st_mtime < _STARTING_SECONDS:
                     raise OwnerError(
                         "another dashboard for this database is starting; try again"
                     ) from None
+                stale = (seen.st_ino, seen.st_mtime_ns)
             elif is_live(current):
                 raise OwnerError(
                     f"a dashboard for this database is already running at {current.url}"
                 ) from None
-            path.unlink(missing_ok=True)  # left by a dashboard that stopped without cleaning up
+            else:
+                stale = current.token
+            if _fingerprint(db) == stale:
+                path.unlink(missing_ok=True)  # left by a dashboard that stopped uncleanly
     raise OwnerError(f"couldn't claim {path}; another dashboard is starting")
+
+
+def _fingerprint(db: str | os.PathLike[str]) -> str | tuple[int, int] | None:
+    """The token of a readable owner file, else its inode and mtime (None if absent)."""
+    current = read_owner(db)
+    if current is not None:
+        return current.token
+    try:
+        seen = owner_path(db).stat()
+    except OSError:
+        return None
+    return (seen.st_ino, seen.st_mtime_ns)
 
 
 def release(db: str | os.PathLike[str], owner: Owner) -> None:
