@@ -422,39 +422,40 @@ def release(db: str | os.PathLike[str], owner: Owner) -> None:
 In `miniflow/ui/server.py`: import `from miniflow.ui.owner import Owner, claim, release`. In `__init__`, before `self.stopping = threading.Event()`, add `self.owner: Owner | None = None`. Replace `start` and `stop` with:
 
 ```python
-    def start(self) -> DashboardServer:
-        self._thread = threading.Thread(
-            target=self.serve_forever,
-            kwargs={"poll_interval": 0.2},
-            daemon=True,
-            name="miniflow-ui",
-        )
-        self._thread.start()
-        if self.controller is not None and self.workspace is not None:
-            # Claimed only once serving, so another process checking the file gets an answer.
-            try:
-                self.owner = claim(self.store.path, self.url, self.workspace.folder)
-            except BaseException:
-                self.stop()
-                raise
-        if self.schedule_service is not None:
-            self.schedule_service.start()
-        return self
+def start(self) -> DashboardServer:
+    self._thread = threading.Thread(
+        target=self.serve_forever,
+        kwargs={"poll_interval": 0.2},
+        daemon=True,
+        name="miniflow-ui",
+    )
+    self._thread.start()
+    if self.controller is not None and self.workspace is not None:
+        # Claimed only once serving, so another process checking the file gets an answer.
+        try:
+            self.owner = claim(self.store.path, self.url, self.workspace.folder)
+        except BaseException:
+            self.stop()
+            raise
+    if self.schedule_service is not None:
+        self.schedule_service.start()
+    return self
 
-    def stop(self) -> None:
-        if self.schedule_service is not None:
-            self.schedule_service.stop()
-        if self.controller is not None:
-            self.controller.shutdown()
-        if self.owner is not None:
-            release(self.store.path, self.owner)
-            self.owner = None
-        self.stopping.set()
-        if self._thread is not None:
-            self.shutdown()
-            self._thread.join(timeout=5)
-        self.server_close()
-        self.store.close()
+
+def stop(self) -> None:
+    if self.schedule_service is not None:
+        self.schedule_service.stop()
+    if self.controller is not None:
+        self.controller.shutdown()
+    if self.owner is not None:
+        release(self.store.path, self.owner)
+        self.owner = None
+    self.stopping.set()
+    if self._thread is not None:
+        self.shutdown()
+        self._thread.join(timeout=5)
+    self.server_close()
+    self.store.close()
 ```
 
 In `do_GET`, before `elif parts == ["api", "runs"]:`, add:
@@ -659,7 +660,9 @@ def test_unknown_drafts_are_reported(flows):
 
 
 @given(st.text(max_size=400))
-@settings(max_examples=150, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=150, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 def test_any_text_gives_a_report_never_an_exception(flows, source):
     report = check_source(flows, "anything", source)
     assert isinstance(report["ok"], bool)
@@ -804,7 +807,9 @@ def _setting_names(call: ast.Call) -> list[str]:
     return names
 
 
-def _top_level(body: list[ast.stmt]) -> tuple[list[str], list[str], list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call]]]:
+def _top_level(
+    body: list[ast.stmt],
+) -> tuple[list[str], list[str], list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call]]]:
     problems: list[str] = []
     imports: list[str] = []
     blocks: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call]] = []
@@ -821,7 +826,9 @@ def _top_level(body: list[ast.stmt]) -> tuple[list[str], list[str], list[tuple[a
             seen_function = True
             for decorator in node.decorator_list:
                 if not (isinstance(decorator, ast.Call) and _block_call(decorator)):
-                    problems.append(f"line {decorator.lineno}: only @block(...) may decorate a function")
+                    problems.append(
+                        f"line {decorator.lineno}: only @block(...) may decorate a function"
+                    )
                 elif _plain_block_args(decorator):
                     blocks.append((node, decorator))
                 else:
@@ -830,10 +837,20 @@ def _top_level(body: list[ast.stmt]) -> tuple[list[str], list[str], list[tuple[a
                     )
             a = node.args
             parts: list[ast.AST | None] = [*a.defaults, *a.kw_defaults, node.returns]
-            parts += [x.annotation for x in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg] if x is not None]
+            parts += [
+                x.annotation
+                for x in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg]
+                if x is not None
+            ]
             if not all(_calls_nothing(p) for p in parts):
-                problems.append(f"line {node.lineno}: {node.name}() calls something in a default value or annotation")
-        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets) and _literal(node.value):
+                problems.append(
+                    f"line {node.lineno}: {node.name}() calls something in a default value or annotation"
+                )
+        elif (
+            isinstance(node, ast.Assign)
+            and all(isinstance(t, ast.Name) for t in node.targets)
+            and _literal(node.value)
+        ):
             pass
         elif (
             isinstance(node, ast.AnnAssign)
@@ -843,7 +860,9 @@ def _top_level(body: list[ast.stmt]) -> tuple[list[str], list[str], list[tuple[a
         ):
             pass
         else:
-            problems.append(f"line {node.lineno}: only imports, functions and plain constants can be at the top level")
+            problems.append(
+                f"line {node.lineno}: only imports, functions and plain constants can be at the top level"
+            )
     return problems, imports, blocks
 
 
@@ -858,8 +877,18 @@ def _shadows_a_module(name: str) -> bool:
 
 def check_source(folder: Path, name: str, source: str) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
-    _add(checks, "name", bool(_NAME.fullmatch(name)), "use lowercase letters, digits and _, starting with a letter, at most 40 characters")
-    _add(checks, "size", len(source) <= _MAX_SOURCE, f"a block's source must be at most {_MAX_SOURCE} characters")
+    _add(
+        checks,
+        "name",
+        bool(_NAME.fullmatch(name)),
+        "use lowercase letters, digits and _, starting with a letter, at most 40 characters",
+    )
+    _add(
+        checks,
+        "size",
+        len(source) <= _MAX_SOURCE,
+        f"a block's source must be at most {_MAX_SOURCE} characters",
+    )
     if not all(c["ok"] for c in checks):
         return {"ok": False, "checks": checks, "imports": []}
     try:
@@ -870,26 +899,54 @@ def check_source(folder: Path, name: str, source: str) -> dict[str, Any]:
         return {"ok": False, "checks": checks, "imports": []}
     _add(checks, "parses", True, "")
     body = list(tree.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
         body = body[1:]  # the module docstring
     try:
         problems, imports, blocks = _top_level(body)
     except RecursionError:
         problems, imports, blocks = ["the source is nested too deeply"], [], []
     _add(checks, "top-level code", not problems, "; ".join(problems))
-    _add(checks, "one block", len(blocks) == 1, "no function has @block(...)" if not blocks else "draft one block per file")
+    _add(
+        checks,
+        "one block",
+        len(blocks) == 1,
+        "no function has @block(...)" if not blocks else "draft one block per file",
+    )
     if len(blocks) == 1:
         fn, call = blocks[0]
         first = call.args[0] if call.args else None
         declared = first.value if isinstance(first, ast.Constant) else None
-        _add(checks, "block name", declared == name, f"@block({declared!r}) should be @block({name!r})")
+        _add(
+            checks,
+            "block name",
+            declared == name,
+            f"@block({declared!r}) should be @block({name!r})",
+        )
         params = {a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]}
         missing = [s for s in _setting_names(call) if s not in params and fn.args.kwarg is None]
-        _add(checks, "settings", not missing, f"not parameters of {fn.name}(): {', '.join(missing)}")
+        _add(
+            checks, "settings", not missing, f"not parameters of {fn.name}(): {', '.join(missing)}"
+        )
         kind_node = _keyword(call, "kind")
-        kind = kind_node.value if isinstance(kind_node, ast.Constant) else "io" if kind_node is None else None
+        kind = (
+            kind_node.value
+            if isinstance(kind_node, ast.Constant)
+            else "io"
+            if kind_node is None
+            else None
+        )
         is_async = isinstance(fn, ast.AsyncFunctionDef)
-        _add(checks, "kind", kind in _KINDS and (kind == "async") == is_async, "kind must be io, cpu or async, and async exactly for 'async def'")
+        _add(
+            checks,
+            "kind",
+            kind in _KINDS and (kind == "async") == is_async,
+            "kind must be io, cpu or async, and async exactly for 'async def'",
+        )
     blocks_dir = _blocks_dir(folder)
     try:
         if blocks_dir.is_dir():
@@ -898,7 +955,12 @@ def check_source(folder: Path, name: str, source: str) -> dict[str, Any]:
         _add(checks, "name is free", name not in taken, f"there is already a block called {name!r}")
     except BlockError as exc:
         _add(checks, "name is free", False, f"couldn't load the existing blocks: {exc}")
-    _add(checks, "doesn't shadow a module", not _shadows_a_module(name), f"a file called {name}.py would hide the module {name!r}; choose another name")
+    _add(
+        checks,
+        "doesn't shadow a module",
+        not _shadows_a_module(name),
+        f"a file called {name}.py would hide the module {name!r}; choose another name",
+    )
     return {"ok": all(c["ok"] for c in checks), "checks": checks, "imports": sorted(set(imports))}
 
 
@@ -917,7 +979,11 @@ def _entry(folder: Path, path: Path) -> dict[str, Any]:
         report = check_source(folder, name, source)
     except UnicodeDecodeError:
         source = data.decode("utf-8", errors="replace")
-        report = {"ok": False, "checks": [{"check": "parses", "ok": False, "detail": "not UTF-8 text"}], "imports": []}
+        report = {
+            "ok": False,
+            "checks": [{"check": "parses", "ok": False, "detail": "not UTF-8 text"}],
+            "imports": [],
+        }
     return {
         "name": name,
         "source": source,
@@ -1043,30 +1109,44 @@ def test_the_dashboard_lists_and_approves_drafts(dashboard):
     draft = write_draft(flows, (name := uniq()), good(name))
     status, drafts = call(server, "GET", "/api/blocks/drafts")
     assert status == 200 and [d["sha256"] for d in drafts] == [draft["sha256"]]
-    status, result = call(server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": draft["sha256"]})
+    status, result = call(
+        server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": draft["sha256"]}
+    )
     assert status == 200 and result["added"] == [name]
-    assert {"name": name, "group": "Plugins"}.items() <= next(b for b in result["blocks"] if b["name"] == name).items()
+    assert {"name": name, "group": "Plugins"}.items() <= next(
+        b for b in result["blocks"] if b["name"] == name
+    ).items()
     assert call(server, "GET", "/api/blocks/drafts") == (200, [])
 
 
 def test_the_dashboard_refuses_a_stale_approval(dashboard):
     server, flows = dashboard
     write_draft(flows, (name := uniq()), good(name))
-    status, body = call(server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": "0" * 64})
+    status, body = call(
+        server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": "0" * 64}
+    )
     assert status == 409 and "changed" in body["error"]
 
 
 def test_the_dashboard_discards_drafts(dashboard):
     server, flows = dashboard
     draft = write_draft(flows, (name := uniq()), good(name))
-    assert call(server, "POST", "/api/blocks/drafts/discard", {"name": name, "sha256": draft["sha256"]}) == (200, {"discarded": name})
+    assert call(
+        server, "POST", "/api/blocks/drafts/discard", {"name": name, "sha256": draft["sha256"]}
+    ) == (200, {"discarded": name})
     assert list_drafts(flows) == []
 
 
 def test_approval_from_another_site_is_refused(dashboard):
     server, flows = dashboard
     draft = write_draft(flows, (name := uniq()), good(name))
-    status, _ = call(server, "POST", "/api/blocks/drafts/approve", {"name": name, "sha256": draft["sha256"]}, headers={"Origin": "http://evil.example"})
+    status, _ = call(
+        server,
+        "POST",
+        "/api/blocks/drafts/approve",
+        {"name": name, "sha256": draft["sha256"]},
+        headers={"Origin": "http://evil.example"},
+    )
     assert status == 403
     assert list_drafts(flows)
 
@@ -1076,7 +1156,10 @@ def test_a_read_only_dashboard_has_no_draft_endpoints(tmp_path):
     flows.mkdir()
     with DashboardServer(tmp_path / "s.db", port=0, flows=flows, allow_run=False) as server:
         assert call(server, "GET", "/api/blocks/drafts")[0] == 404
-        assert call(server, "POST", "/api/blocks/drafts/approve", {"name": "x", "sha256": "0"})[0] == 404
+        assert (
+            call(server, "POST", "/api/blocks/drafts/approve", {"name": "x", "sha256": "0"})[0]
+            == 404
+        )
 ```
 
 Note: `call` sends a JSON body even on GET; the server ignores it.
@@ -1175,7 +1258,11 @@ def test_the_editor_ships_the_pending_blocks_panel(dashboard):
     assert status == 200 and ctype.startswith("text/javascript")
     assert b"function studioDraftsInit" in body
     page = get(server, "/")[2]
-    for marker in (b'id="studio-drafts"', b'id="studio-drafts-dialog"', b"/static/editor-drafts.js"):
+    for marker in (
+        b'id="studio-drafts"',
+        b'id="studio-drafts-dialog"',
+        b"/static/editor-drafts.js",
+    ):
         assert marker in page
     assert b'"studioDraftsInit"' in get(server, "/static/editor.js")[2]
 ```
@@ -1425,7 +1512,9 @@ def _cmd_approve_block(args: argparse.Namespace) -> int:
         return 2
     draft = next((d for d in list_drafts(folder) if d["name"] == args.name), None)
     if draft is None:
-        print(f"error: there is no draft called {args.name!r} in {folder / 'blocks'}", file=sys.stderr)
+        print(
+            f"error: there is no draft called {args.name!r} in {folder / 'blocks'}", file=sys.stderr
+        )
         return 2
     print(draft["source"].rstrip() + "\n")
     for check in draft["checks"]:
@@ -1592,7 +1681,10 @@ from hypothesis import strategies as st
 
 from miniflow.agent.tools import TOOLS, Toolbox, ToolError, UnknownTool, available, call
 
-HELLO = {"description": "Say hello", "steps": {"hello": {"block": "log", "settings": {"message": "hi"}}}}
+HELLO = {
+    "description": "Say hello",
+    "steps": {"hello": {"block": "log", "settings": {"message": "hi"}}},
+}
 BYE = {"steps": {"bye": {"block": "log", "settings": {"message": "bye"}}}}
 
 
@@ -1612,7 +1704,10 @@ class FakeLink:
         return {}
 
     def control(self, *, start: bool = True) -> dict[str, Any]:
-        return {"running": [], "queued": [{"flow": "hello", "source": "manual:run:hello", "queued_at": 0}]}
+        return {
+            "running": [],
+            "queued": [{"flow": "hello", "source": "manual:run:hello", "queued_at": 0}],
+        }
 
 
 @pytest.fixture
@@ -1649,7 +1744,11 @@ def test_every_tool_has_an_object_schema():
 
 @pytest.mark.parametrize(
     ("args", "message"),
-    [({}, "name is required"), ({"name": 3}, "name must be string"), ({"name": "x", "other": 1}, "unknown argument")],
+    [
+        ({}, "name is required"),
+        ({"name": 3}, "name must be string"),
+        ({"name": "x", "other": 1}, "unknown argument"),
+    ],
 )
 def test_arguments_are_checked(box, args, message):
     with pytest.raises(ToolError, match=message):
@@ -1678,13 +1777,24 @@ def test_get_and_list_flows(box):
     flow = call(box, "get_flow", {"name": "hello"})
     assert flow["document"] == HELLO and flow["version"] == box.workspace.file_version("hello")
     listed = call(box, "list_flows", {})["flows"]
-    assert listed == [{"name": "hello", "description": "Say hello", "valid": True, "problems": [], "schedules": [], "version": flow["version"]}]
+    assert listed == [
+        {
+            "name": "hello",
+            "description": "Say hello",
+            "valid": True,
+            "problems": [],
+            "schedules": [],
+            "version": flow["version"],
+        }
+    ]
     with pytest.raises(ToolError, match="no flow"):
         call(box, "get_flow", {"name": "missing"})
 
 
 def test_validate_reports_problems(box):
-    result = call(box, "validate_flow", {"name": "x", "document": {"steps": {"a": {"block": "lgo"}}}})
+    result = call(
+        box, "validate_flow", {"name": "x", "document": {"steps": {"a": {"block": "lgo"}}}}
+    )
     assert result["valid"] is False and any("lgo" in p for p in result["problems"])
 
 
@@ -1692,7 +1802,16 @@ def test_save_new_then_update_with_its_version(box):
     created = call(box, "save_flow", {"name": "bye", "document": BYE, "message": "first"})
     assert created["saved"] and created["version"] == box.workspace.file_version("bye")
     changed = {"steps": {"bye": {"block": "log", "settings": {"message": "see you"}}}}
-    call(box, "save_flow", {"name": "bye", "document": changed, "message": "second", "base_version": created["version"]})
+    call(
+        box,
+        "save_flow",
+        {
+            "name": "bye",
+            "document": changed,
+            "message": "second",
+            "base_version": created["version"],
+        },
+    )
     assert box.workspace.read("bye") == changed
     assert box.workspace.versions("bye")[0]["message"] == "first (agent)"
 
@@ -1702,20 +1821,32 @@ def test_save_refuses_conflicts_and_returns_the_current_document(box):
         call(box, "save_flow", {"name": "hello", "document": BYE, "message": "oops"})
     assert info.value.data["current_document"] == HELLO
     with pytest.raises(ToolError, match="changed since"):
-        call(box, "save_flow", {"name": "hello", "document": BYE, "message": "x", "base_version": "0" * 16})
+        call(
+            box,
+            "save_flow",
+            {"name": "hello", "document": BYE, "message": "x", "base_version": "0" * 16},
+        )
     assert box.workspace.read("hello") == HELLO
 
 
 def test_save_refuses_invalid_flows(box):
     with pytest.raises(ToolError, match="problems") as info:
-        call(box, "save_flow", {"name": "bad", "document": {"steps": {"a": {"block": "lgo"}}}, "message": "x"})
+        call(
+            box,
+            "save_flow",
+            {"name": "bad", "document": {"steps": {"a": {"block": "lgo"}}}, "message": "x"},
+        )
     assert info.value.data["problems"]
     assert not (box.folder / "bad.json").exists()
 
 
 def test_history_and_restore(box):
     version = call(box, "get_flow", {"name": "hello"})["version"]
-    call(box, "save_flow", {"name": "hello", "document": BYE, "message": "replace", "base_version": version})
+    call(
+        box,
+        "save_flow",
+        {"name": "hello", "document": BYE, "message": "replace", "base_version": version},
+    )
     old = call(box, "flow_history", {"name": "hello"})["versions"][0]["id"]
     restored = call(box, "restore_flow_version", {"name": "hello", "version_id": old})
     assert restored["document"] == HELLO and box.workspace.read("hello") == HELLO
@@ -1723,14 +1854,18 @@ def test_history_and_restore(box):
 
 def test_templates_and_tests(box):
     template = call(box, "list_templates", {})["templates"][0]["name"]
-    created = call(box, "create_flow_from_template", {"template": template, "name": "from_template"})
+    created = call(
+        box, "create_flow_from_template", {"template": template, "name": "from_template"}
+    )
     assert created["version"] == box.workspace.file_version("from_template")
     assert call(box, "test_flow", {"name": "hello"})["total"] == 0
 
 
 def test_environment_values_never_leave(box):
     assert call(box, "list_environments", {}) == {"environments": ["prod"]}
-    everything = json.dumps([call(box, name, {}) for name in ("list_flows", "list_environments", "list_templates")])
+    everything = json.dumps(
+        [call(box, name, {}) for name in ("list_flows", "list_environments", "list_templates")]
+    )
     assert "supersecret" not in everything
 
 
@@ -1750,10 +1885,15 @@ def test_draft_tools(box):
 
 @given(
     name=st.sampled_from(sorted(TOOLS)),
-    args=st.dictionaries(st.sampled_from(["name", "document", "message", "source", "group", "run_id", "limit", "x"]),
-                         st.none() | st.booleans() | st.integers() | st.text(max_size=12) | st.just({}), max_size=4),
+    args=st.dictionaries(
+        st.sampled_from(["name", "document", "message", "source", "group", "run_id", "limit", "x"]),
+        st.none() | st.booleans() | st.integers() | st.text(max_size=12) | st.just({}),
+        max_size=4,
+    ),
 )
-@settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 def test_any_input_gives_a_result_or_a_tool_error(box, name, args):
     try:
         result = call(box, name, args)
@@ -1806,7 +1946,17 @@ from miniflow.blocks import BlockError, Setting, get_block
 from miniflow.flowfile import FlowFileError
 from miniflow.ui.author import FlowWorkspace, VersionConflict, WorkspaceError, block_catalog
 
-__all__ = ["TOOLS", "RunLink", "Tool", "ToolError", "Toolbox", "UnknownTool", "available", "call", "tool"]
+__all__ = [
+    "TOOLS",
+    "RunLink",
+    "Tool",
+    "ToolError",
+    "Toolbox",
+    "UnknownTool",
+    "available",
+    "call",
+    "tool",
+]
 
 Group = Literal["read", "write", "run"]
 
@@ -1846,10 +1996,20 @@ def tool(
     properties: dict[str, dict[str, Any]] | None = None,
     required: Iterable[str] = (),
     group: Group = "read",
-) -> Callable[[Callable[[Toolbox, dict[str, Any]], dict[str, Any]]], Callable[[Toolbox, dict[str, Any]], dict[str, Any]]]:
-    schema = {"type": "object", "properties": properties or {}, "required": list(required), "additionalProperties": False}
+) -> Callable[
+    [Callable[[Toolbox, dict[str, Any]], dict[str, Any]]],
+    Callable[[Toolbox, dict[str, Any]], dict[str, Any]],
+]:
+    schema = {
+        "type": "object",
+        "properties": properties or {},
+        "required": list(required),
+        "additionalProperties": False,
+    }
 
-    def register(fn: Callable[[Toolbox, dict[str, Any]], dict[str, Any]]) -> Callable[[Toolbox, dict[str, Any]], dict[str, Any]]:
+    def register(
+        fn: Callable[[Toolbox, dict[str, Any]], dict[str, Any]],
+    ) -> Callable[[Toolbox, dict[str, Any]], dict[str, Any]]:
         TOOLS[name] = Tool(name, description, schema, group, fn)
         return fn
 
@@ -1868,7 +2028,14 @@ def available(*, read_only: bool, runs: bool) -> list[Tool]:
 
 
 class Toolbox:
-    def __init__(self, flows: str | Path, db: str | Path, *, read_only: bool = False, runs: RunLink | None = None) -> None:
+    def __init__(
+        self,
+        flows: str | Path,
+        db: str | Path,
+        *,
+        read_only: bool = False,
+        runs: RunLink | None = None,
+    ) -> None:
         self.workspace = FlowWorkspace(flows)
         self.folder = self.workspace.folder
         self.db = Path(db).resolve()
@@ -1876,7 +2043,13 @@ class Toolbox:
         self.tools = {t.name: t for t in available(read_only=read_only, runs=runs is not None)}
 
 
-_JSON_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool, "object": dict, "array": list}
+_JSON_TYPES: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "boolean": bool,
+    "object": dict,
+    "array": list,
+}
 
 
 def _check_args(t: Tool, args: object) -> dict[str, Any]:
@@ -1915,14 +2088,22 @@ def call(box: Toolbox, name: str, args: object) -> dict[str, Any]:
     except FlowFileError as exc:
         raise ToolError("; ".join(exc.problems), {"problems": exc.problems}) from None
     except json.JSONDecodeError as exc:
-        raise ToolError(f"the flow file isn't valid JSON (line {exc.lineno}, column {exc.colno})") from None
+        raise ToolError(
+            f"the flow file isn't valid JSON (line {exc.lineno}, column {exc.colno})"
+        ) from None
     except (WorkspaceError, BlockError) as exc:
         raise ToolError(str(exc)) from None
 
 
 # ------------------------------------------------------------------ helpers
-_NAME = {"type": "string", "description": "flow name: letters, digits, _ or -, starting with a letter"}
-_DOCUMENT = {"type": "object", "description": "the whole JSON flow document, as get_flow returns it"}
+_NAME = {
+    "type": "string",
+    "description": "flow name: letters, digits, _ or -, starting with a letter",
+}
+_DOCUMENT = {
+    "type": "object",
+    "description": "the whole JSON flow document, as get_flow returns it",
+}
 _PLACEHOLDERS: dict[type, Any] = {str: "text", int: 0, float: 0, bool: False, list: [], dict: {}}
 
 
@@ -1936,7 +2117,11 @@ def _placeholder(s: Setting) -> Any:
 
 
 def _flow(box: Toolbox, name: str) -> dict[str, Any]:
-    return {"name": name, "document": box.workspace.read(name), "version": box.workspace.file_version(name)}
+    return {
+        "name": name,
+        "document": box.workspace.read(name),
+        "version": box.workspace.file_version(name),
+    }
 
 
 # --------------------------------------------------------------------- read
@@ -1944,7 +2129,12 @@ def _flow(box: Toolbox, name: str) -> dict[str, Any]:
     "list_blocks",
     "List the blocks a flow step can use, with each setting's type, default and whether it is "
     "required or secret. Includes approved plugin blocks from the flows folder.",
-    {"group": {"type": "string", "description": "only this palette group, e.g. Transform or Plugins"}},
+    {
+        "group": {
+            "type": "string",
+            "description": "only this palette group, e.g. Transform or Plugins",
+        }
+    },
 )
 def _list_blocks(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     blocks = box.workspace.catalog()
@@ -1963,11 +2153,17 @@ def _describe_block(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     box.workspace.catalog()  # loads the folder's plugin blocks
     spec = get_block(args["name"])
     entry = next(b for b in block_catalog() if b["name"] == spec.name)
-    example = {"block": spec.name, "settings": {s.name: _placeholder(s) for s in spec.settings if s.required}}
+    example = {
+        "block": spec.name,
+        "settings": {s.name: _placeholder(s) for s in spec.settings if s.required},
+    }
     return {**entry, "doc": inspect.getdoc(spec.fn) or "", "example_step": example}
 
 
-@tool("list_flows", "List the flows in the folder: description, whether each is valid, its schedules and version.")
+@tool(
+    "list_flows",
+    "List the flows in the folder: description, whether each is valid, its schedules and version.",
+)
 def _list_flows(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     flows = []
     for name in box.workspace.list():
@@ -1992,7 +2188,12 @@ def _list_flows(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return {"flows": flows}
 
 
-@tool("get_flow", "Read a flow's JSON document and its version. Pass the version as base_version when saving changes.", {"name": _NAME}, ["name"])
+@tool(
+    "get_flow",
+    "Read a flow's JSON document and its version. Pass the version as base_version when saving changes.",
+    {"name": _NAME},
+    ["name"],
+)
 def _get_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return _flow(box, args["name"])
 
@@ -2002,12 +2203,19 @@ def _list_templates(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return {"templates": box.workspace.templates()}
 
 
-@tool("list_environments", "Names of the environments a run can use (their values are never shown).")
+@tool(
+    "list_environments", "Names of the environments a run can use (their values are never shown)."
+)
 def _list_environments(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return {"environments": box.workspace.environments()}
 
 
-@tool("flow_history", "Earlier saved versions of a flow, newest first, with who saved them and why.", {"name": _NAME}, ["name"])
+@tool(
+    "flow_history",
+    "Earlier saved versions of a flow, newest first, with who saved them and why.",
+    {"name": _NAME},
+    ["name"],
+)
 def _flow_history(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     return {"versions": box.workspace.versions(args["name"])}
 
@@ -2025,7 +2233,11 @@ def _list_block_drafts(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
 )
 def _validate_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     result = box.workspace.validate(args["name"], args["document"])
-    return {"valid": result["valid"], "problems": result["problems"], "steps": result.get("steps", [])}
+    return {
+        "valid": result["valid"],
+        "problems": result["problems"],
+        "steps": result.get("steps", []),
+    }
 
 
 @tool(
@@ -2037,7 +2249,11 @@ def _validate_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
 def _test_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     document = args["document"] if "document" in args else box.workspace.read(args["name"])
     reports = box.workspace.test(args["name"], document)
-    return {"passed": sum(bool(r["passed"]) for r in reports), "total": len(reports), "tests": reports}
+    return {
+        "passed": sum(bool(r["passed"]) for r in reports),
+        "total": len(reports),
+        "tests": reports,
+    }
 
 
 # -------------------------------------------------------------------- write
@@ -2072,8 +2288,15 @@ def _save_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
             data["current_document"] = box.workspace.read(name)
         raise ToolError(str(exc), data) from None
     if not result["valid"]:
-        raise ToolError("the flow has problems, so it wasn't saved", {"problems": result["problems"]})
-    return {"saved": True, "name": name, "version": box.workspace.file_version(name), "steps": result["steps"]}
+        raise ToolError(
+            "the flow has problems, so it wasn't saved", {"problems": result["problems"]}
+        )
+    return {
+        "saved": True,
+        "name": name,
+        "version": box.workspace.file_version(name),
+        "steps": result["steps"],
+    }
 
 
 @tool(
@@ -2111,7 +2334,7 @@ def _restore_flow_version(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     "draft_block",
     "Propose a new block written in Python. It is checked without running it and saved as a "
     "draft; nothing runs until a person approves it in the MiniFlow Editor. Blocks look like: "
-    "from miniflow.blocks import Setting, block / @block(\"name\", settings=[Setting(\"x\", str)]) "
+    'from miniflow.blocks import Setting, block / @block("name", settings=[Setting("x", str)]) '
     "/ def fn(x): ... returning JSON-like data. Top-level code may only be imports, functions and "
     "plain constants.",
     {
@@ -2123,7 +2346,9 @@ def _restore_flow_version(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
     group="write",
 )
 def _draft_block(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
-    draft = write_draft(box.folder, args["name"], args["source"], replace=args.get("replace", False))
+    draft = write_draft(
+        box.folder, args["name"], args["source"], replace=args.get("replace", False)
+    )
     return {
         "drafted": True,
         "name": draft["name"],
@@ -2200,7 +2425,12 @@ def test_run_flow_finds_the_new_run_id(flows, tmp_path):
 
 def test_run_flow_reports_a_queued_run(box):
     result = call(box, "run_flow", {"name": "hello"})
-    assert result == {"state": "queued", "position": 1, "dashboard": "http://127.0.0.1:1", "database": str(box.db)}
+    assert result == {
+        "state": "queued",
+        "position": 1,
+        "dashboard": "http://127.0.0.1:1",
+        "database": str(box.db),
+    }
 
 
 def test_unknown_runs_and_limits(box):
@@ -2299,7 +2529,10 @@ def test_a_dashboard_for_another_folder_is_an_error(tmp_path, flows):
 def test_no_dashboard_and_no_starting(tmp_path, flows):
     with pytest.raises(LinkError, match="no dashboard"):
         DashboardLink(flows, tmp_path / "s.db", start=False).url()
-    assert DashboardLink(flows, tmp_path / "s.db", start=False).control(start=False) == {"running": [], "queued": []}
+    assert DashboardLink(flows, tmp_path / "s.db", start=False).control(start=False) == {
+        "running": [],
+        "queued": [],
+    }
 
 
 def test_two_links_starting_together_share_one_dashboard(tmp_path, flows):
@@ -2384,7 +2617,9 @@ class LinkError(Exception):
 
 
 class DashboardLink:
-    def __init__(self, flows: str | Path, db: str | Path, *, start: bool = True, timeout: float = 15.0) -> None:
+    def __init__(
+        self, flows: str | Path, db: str | Path, *, start: bool = True, timeout: float = 15.0
+    ) -> None:
         self.flows = Path(flows).resolve()
         self.db = Path(db).resolve()
         self.start = start
@@ -2447,12 +2682,19 @@ class DashboardLink:
         text = self._stderr.read().decode(errors="replace").strip()
         return f":\n{text[-2000:]}" if text else ""
 
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None, url: str | None = None) -> Any:
+    def _request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, url: str | None = None
+    ) -> Any:
         address = urlsplit(url or self.url())
         conn = http.client.HTTPConnection(address.hostname or "127.0.0.1", address.port, timeout=30)
         data = None if body is None else json.dumps(body).encode()
         try:
-            conn.request(method, path, body=data, headers={"Content-Type": "application/json"} if data else {})
+            conn.request(
+                method,
+                path,
+                body=data,
+                headers={"Content-Type": "application/json"} if data else {},
+            )
             response = conn.getresponse()
             payload = json.loads(response.read() or b"null")
         except (OSError, ValueError) as exc:
@@ -2480,7 +2722,9 @@ class DashboardLink:
             owner = self._live()
             if owner is None:
                 return {"running": [], "queued": []}
-            result: dict[str, Any] = self._request("GET", "/api/control", url=self._same_folder(owner))
+            result: dict[str, Any] = self._request(
+                "GET", "/api/control", url=self._same_folder(owner)
+            )
             return result
         result = self._request("GET", "/api/control")
         return result
@@ -2516,7 +2760,9 @@ def _link(box: Toolbox) -> RunLink:
 
 def _newest_run(box: Toolbox, flow: str, since: float) -> str | None:
     with StateStore(box.db) as store:
-        return next((r.run_id for r in store.list_runs() if r.flow == flow and r.started_at >= since), None)
+        return next(
+            (r.run_id for r in store.list_runs() if r.flow == flow and r.started_at >= since), None
+        )
 
 
 @tool(
@@ -2525,7 +2771,10 @@ def _newest_run(box: Toolbox, flow: str, since: float) -> str | None:
     "the run id). Runs happen in the MiniFlow dashboard, in the same queue as the person's Run "
     "button; one is started for you if none is running. Check on it later with get_run. If the "
     "result says queued, call list_runs later to find its run id.",
-    {"name": _NAME, "environment": {"type": "string", "description": "an environment from list_environments"}},
+    {
+        "name": _NAME,
+        "environment": {"type": "string", "description": "an environment from list_environments"},
+    },
     ["name"],
     group="run",
 )
@@ -2575,7 +2824,10 @@ def _get_run(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "list_runs",
     "Recent runs, newest first, with how many steps are in each state, then runs waiting in the queue.",
-    {"flow": {"type": "string"}, "limit": {"type": "integer", "description": "1 to 200, default 20"}},
+    {
+        "flow": {"type": "string"},
+        "limit": {"type": "integer", "description": "1 to 200, default 20"},
+    },
     group="run",
 )
 def _list_runs(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
@@ -2591,7 +2843,11 @@ def _list_runs(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
             for state in store.get_states(r.run_id).values():
                 counts[state.value] = counts.get(state.value, 0) + 1
             out.append({**asdict(r), "counts": counts})
-    queued = [q for q in _link(box).control(start=False).get("queued", []) if flow is None or q.get("flow") == flow]
+    queued = [
+        q
+        for q in _link(box).control(start=False).get("queued", [])
+        if flow is None or q.get("flow") == flow
+    ]
     return {"runs": out, "queued": queued}
 
 
@@ -2669,12 +2925,28 @@ def server(flows, tmp_path) -> McpServer:
 
 
 def req(method: str, params: dict | None = None, id_: int = 1) -> dict:
-    return {"jsonrpc": "2.0", "id": id_, "method": method, **({"params": params} if params is not None else {})}
+    return {
+        "jsonrpc": "2.0",
+        "id": id_,
+        "method": method,
+        **({"params": params} if params is not None else {}),
+    }
 
 
-@pytest.mark.parametrize(("asked", "expected"), [("2025-06-18", "2025-06-18"), ("1999-01-01", PROTOCOL_VERSIONS[0])])
+@pytest.mark.parametrize(
+    ("asked", "expected"), [("2025-06-18", "2025-06-18"), ("1999-01-01", PROTOCOL_VERSIONS[0])]
+)
 def test_initialize_negotiates_the_version(server, asked, expected):
-    reply = server.handle(req("initialize", {"protocolVersion": asked, "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}))
+    reply = server.handle(
+        req(
+            "initialize",
+            {
+                "protocolVersion": asked,
+                "capabilities": {},
+                "clientInfo": {"name": "t", "version": "0"},
+            },
+        )
+    )
     result = reply["result"]
     assert reply["id"] == 1 and result["protocolVersion"] == expected
     assert result["capabilities"] == {"tools": {"listChanged": False}}
@@ -2696,7 +2968,9 @@ def test_tools_list_matches_the_toolbox(server):
 
 
 def test_a_tool_call_returns_structured_and_text_content(server):
-    result = server.handle(req("tools/call", {"name": "get_flow", "arguments": {"name": "hello"}}))["result"]
+    result = server.handle(req("tools/call", {"name": "get_flow", "arguments": {"name": "hello"}}))[
+        "result"
+    ]
     assert result["isError"] is False and result["structuredContent"]["document"] == HELLO
     assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
 
@@ -2710,9 +2984,17 @@ def test_an_unexpected_exception_is_reported_not_raised(server, monkeypatch):
     def boom(box, args):
         raise RuntimeError("kaput")
 
-    monkeypatch.setitem(server.box.tools, "ping_me", tools.Tool("ping_me", "test", {"type": "object", "properties": {}, "required": []}, "read", boom))
+    monkeypatch.setitem(
+        server.box.tools,
+        "ping_me",
+        tools.Tool(
+            "ping_me", "test", {"type": "object", "properties": {}, "required": []}, "read", boom
+        ),
+    )
     result = server.handle(req("tools/call", {"name": "ping_me"}))["result"]
-    assert result["isError"] is True and "RuntimeError: kaput" in result["structuredContent"]["error"]
+    assert (
+        result["isError"] is True and "RuntimeError: kaput" in result["structuredContent"]["error"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -2735,28 +3017,64 @@ def test_a_printing_plugin_cannot_corrupt_stdout(flows, tmp_path):
     name = "noisy_" + uuid.uuid4().hex[:8]
     (flows / "blocks").mkdir()
     (flows / "blocks" / f"{name}.py").write_text(
-        f'from miniflow.blocks import block\nprint("noise from {name}")\n\n@block("{name}")\ndef run():\n    return 1\n', "utf-8"
+        f'from miniflow.blocks import block\nprint("noise from {name}")\n\n@block("{name}")\ndef run():\n    return 1\n',
+        "utf-8",
     )
-    stdin = io.StringIO(json.dumps(req("tools/call", {"name": "list_blocks", "arguments": {}})) + "\n")
+    stdin = io.StringIO(
+        json.dumps(req("tools/call", {"name": "list_blocks", "arguments": {}})) + "\n"
+    )
     stdout = io.StringIO()
     McpServer(Toolbox(flows, tmp_path / "s.db")).serve(stdin, stdout)
     lines = stdout.getvalue().splitlines()
     assert len(lines) == 1 and "noise" not in lines[0]
-    assert name in {b["name"] for b in json.loads(lines[0])["result"]["structuredContent"]["blocks"]}
+    assert name in {
+        b["name"] for b in json.loads(lines[0])["result"]["structuredContent"]["blocks"]
+    }
 
 
 def test_a_real_subprocess_round_trip_in_utf8(flows, tmp_path):
     messages = [
-        req("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}, 1),
+        req(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "t", "version": "0"},
+            },
+            1,
+        ),
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         req("tools/list", None, 2),
-        req("tools/call", {"name": "save_flow", "arguments": {"name": "rupees", "document": {"description": "₹ report", **HELLO}, "message": "₹"}}, 3),
+        req(
+            "tools/call",
+            {
+                "name": "save_flow",
+                "arguments": {
+                    "name": "rupees",
+                    "document": {"description": "₹ report", **HELLO},
+                    "message": "₹",
+                },
+            },
+            3,
+        ),
         req("tools/call", {"name": "get_flow", "arguments": {"name": "rupees"}}, 4),
     ]
     stdin = "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in messages).encode("utf-8")
     done = subprocess.run(
-        [sys.executable, "-m", "miniflow", "mcp", "--flows", str(flows), "--db", str(tmp_path / "s.db"), "--no-runs"],
-        input=stdin, capture_output=True, timeout=50,
+        [
+            sys.executable,
+            "-m",
+            "miniflow",
+            "mcp",
+            "--flows",
+            str(flows),
+            "--db",
+            str(tmp_path / "s.db"),
+            "--no-runs",
+        ],
+        input=stdin,
+        capture_output=True,
+        timeout=50,
     )
     assert done.returncode == 0, done.stderr.decode(errors="replace")
     replies = [json.loads(line) for line in done.stdout.decode("utf-8").splitlines()]
@@ -2838,7 +3156,11 @@ def _error(id_: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _content(payload: dict[str, Any], is_error: bool) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": _dumps(payload)}], "structuredContent": payload, "isError": is_error}
+    return {
+        "content": [{"type": "text", "text": _dumps(payload)}],
+        "structuredContent": payload,
+        "isError": is_error,
+    }
 
 
 class McpServer:
@@ -2854,12 +3176,20 @@ class McpServer:
 
     def handle(self, message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict):
-            return _error(None, INVALID_REQUEST, "expected one JSON-RPC 2.0 message (batches aren't supported)")
+            return _error(
+                None,
+                INVALID_REQUEST,
+                "expected one JSON-RPC 2.0 message (batches aren't supported)",
+            )
         id_ = message.get("id")
         if "method" not in message and ("result" in message or "error" in message):
             return None  # a reply to a request this server never sends
         if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
-            return _error(id_ if isinstance(id_, str | int) else None, INVALID_REQUEST, "expected a JSON-RPC 2.0 request")
+            return _error(
+                id_ if isinstance(id_, str | int) else None,
+                INVALID_REQUEST,
+                "expected a JSON-RPC 2.0 request",
+            )
         if "id" not in message:
             return None  # a notification: initialized, cancelled, ...
         if isinstance(id_, bool) or not isinstance(id_, str | int):
@@ -2883,7 +3213,10 @@ class McpServer:
         if method == "ping":
             return _result(id_, {})
         if method == "tools/list":
-            tools = [{"name": t.name, "description": t.description, "inputSchema": t.schema} for t in self.box.tools.values()]
+            tools = [
+                {"name": t.name, "description": t.description, "inputSchema": t.schema}
+                for t in self.box.tools.values()
+            ]
             return _result(id_, {"tools": tools})
         if method == "tools/call":
             return self._call(id_, params)
@@ -2904,7 +3237,10 @@ class McpServer:
             return _result(id_, _content(payload, True))
         except Exception as exc:
             log.exception("tool %s failed", name)
-            return _result(id_, _content({"error": f"internal error in {name}: {type(exc).__name__}: {exc}"}, True))
+            return _result(
+                id_,
+                _content({"error": f"internal error in {name}: {type(exc).__name__}: {exc}"}, True),
+            )
         return _result(id_, _content(result, False))
 
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:
@@ -2955,12 +3291,14 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
 Parser, after `approve-block`:
 
 ```python
-    m = sub.add_parser("mcp", help="let an agent (Claude Code, Claude Desktop...) build and run flows over MCP")
-    m.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
-    m.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
-    m.add_argument("--read-only", action="store_true", help="only tools that change nothing")
-    m.add_argument("--no-runs", action="store_true", help="no run tools; never start a dashboard")
-    m.set_defaults(func=_cmd_mcp)
+m = sub.add_parser(
+    "mcp", help="let an agent (Claude Code, Claude Desktop...) build and run flows over MCP"
+)
+m.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
+m.add_argument("--db", default=DEFAULT_DB, help=f"state database (default {DEFAULT_DB})")
+m.add_argument("--read-only", action="store_true", help="only tools that change nothing")
+m.add_argument("--no-runs", action="store_true", help="no run tools; never start a dashboard")
+m.set_defaults(func=_cmd_mcp)
 ```
 
 - [ ] **Step 5: Run the tests**
