@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from miniflow.agent.drafts import DraftError, list_drafts, write_draft
+from miniflow.agent.owner import LinkError
 from miniflow.blocks import BlockError, Setting, get_block
 from miniflow.flowfile import FlowFileError
+from miniflow.store import StateStore
 from miniflow.ui.author import FlowWorkspace, VersionConflict, WorkspaceError, block_catalog
 
 __all__ = [
@@ -178,7 +181,7 @@ def call(box: Toolbox, name: str, args: object) -> dict[str, Any]:
         raise ToolError(
             f"the flow file isn't valid JSON (line {exc.lineno}, column {exc.colno})"
         ) from None
-    except (WorkspaceError, BlockError) as exc:
+    except (WorkspaceError, BlockError, LinkError) as exc:
         raise ToolError(str(exc)) from None
 
 
@@ -454,3 +457,126 @@ def _draft_block(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
         f"blocks (or: miniflow approve-block {draft['name']} --flows {box.folder}). Flows can't "
         "use it until then.",
     }
+
+
+# --------------------------------------------------------------------- runs
+_RUN_ID_WAIT = 5.0
+
+
+def _link(box: Toolbox) -> RunLink:
+    if box.runs is None:  # run tools are hidden then; this guards direct calls
+        raise ToolError("runs are turned off for this server")
+    return box.runs
+
+
+def _newest_run(box: Toolbox, flow: str, since: float) -> str | None:
+    with StateStore(box.db) as store:
+        return next(
+            (r.run_id for r in store.list_runs() if r.flow == flow and r.started_at >= since), None
+        )
+
+
+@tool(
+    "run_flow",
+    "Start a run of a saved flow and return at once (it may take up to a few seconds to learn "
+    "the run id). Runs happen in the MiniFlow dashboard, in the same queue as the person's Run "
+    "button; one is started for you if none is running. Check on it later with get_run. If the "
+    "result says queued, call list_runs later to find its run id.",
+    {
+        "name": _NAME,
+        "environment": {"type": "string", "description": "an environment from list_environments"},
+    },
+    ["name"],
+    group="run",
+)
+def _run_flow(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
+    link = _link(box)
+    name = args["name"]
+    since = time.time()
+    active = link.run(name, args.get("environment"))
+    where = {"dashboard": link.url(), "database": str(box.db)}
+    if active.get("queued"):
+        queue = link.control().get("queued", [])
+        position = next(
+            (
+                i + 1
+                for i, q in enumerate(queue)
+                if q.get("flow") == name
+                and q.get("source", f"manual:run:{name}") == f"manual:run:{name}"
+            ),
+            None,
+        )
+        return {"state": "queued", "position": position, **where}
+    run_id = active.get("run_id")
+    deadline = time.monotonic() + _RUN_ID_WAIT
+    while run_id is None and time.monotonic() < deadline:
+        run_id = _newest_run(box, name, since)
+        if run_id is None:
+            time.sleep(0.1)
+    return {"state": "started", "run_id": run_id, **where}
+
+
+@tool(
+    "get_run",
+    "Run status and per-step state, attempts, errors and result previews.",
+    {"run_id": {"type": "string"}},
+    ["run_id"],
+    group="run",
+)
+def _get_run(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
+    with StateStore(box.db) as store:
+        meta = next((r for r in store.list_runs() if r.run_id == args["run_id"]), None)
+        if meta is None:
+            raise ToolError(f"there is no run {args['run_id']!r}")
+        tasks = store.changes_since(meta.run_id, 0.0)
+    steps = [
+        {
+            "name": t.task, "state": t.state.value, "attempts": t.attempts, "error": t.error,
+            "preview": t.preview, "from_cache": t.from_cache,
+            "started_at": t.started_at, "finished_at": t.finished_at,
+        }
+        for t in tasks
+    ]  # fmt: skip
+    return {**asdict(meta), "finished": meta.finished_at is not None, "steps": steps}
+
+
+@tool(
+    "list_runs",
+    "Recent runs with step-state counts, newest first, and runs waiting in the queue.",
+    {
+        "flow": {"type": "string"},
+        "limit": {"type": "integer", "description": "1 to 200, default 20"},
+    },
+    group="run",
+)
+def _list_runs(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
+    limit = args.get("limit", 20)
+    if not 1 <= limit <= 200:
+        raise ToolError("limit must be from 1 to 200")
+    flow = args.get("flow")
+    with StateStore(box.db) as store:
+        runs = [r for r in store.list_runs() if flow is None or r.flow == flow][:limit]
+        out = []
+        for r in runs:
+            counts: dict[str, int] = {}
+            for state in store.get_states(r.run_id).values():
+                counts[state.value] = counts.get(state.value, 0) + 1
+            out.append({**asdict(r), "counts": counts})
+    queued = [
+        q
+        for q in _link(box).control(start=False).get("queued", [])
+        if flow is None or q.get("flow") == flow
+    ]
+    return {"runs": out, "queued": queued}
+
+
+@tool(
+    "cancel_run",
+    "Stop an active run. It ends INTERRUPTED and the person can resume it from the dashboard.",
+    {"run_id": {"type": "string"}},
+    ["run_id"],
+    group="run",
+)
+def _cancel_run(box: Toolbox, args: dict[str, Any]) -> dict[str, Any]:
+    _link(box).cancel(args["run_id"])
+    return _get_run(box, args)

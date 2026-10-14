@@ -11,7 +11,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from miniflow import DAG, StateStore, task
 from miniflow.agent.tools import TOOLS, Toolbox, ToolError, UnknownTool, available, call
+from tests import _sched_flows as F
 
 HELLO = {
     "description": "Say hello",
@@ -258,3 +260,50 @@ def test_template_creation_is_labelled_agent(box):
     box.workspace.save("starter", BYE)
     assert box.workspace.versions("starter")[0]["message"].endswith("(agent)")
     assert created["version"]
+
+
+class RecordingLink(FakeLink):
+    """Starts are recorded as a finished run in the store, as the dashboard's child would."""
+
+    def __init__(self, db: Path) -> None:
+        super().__init__()
+        self.db = db
+
+    def run(self, flow: str, environment: str | None) -> dict[str, Any]:
+        with StateStore(self.db) as store:
+            run_id = store.create_run(flow, DAG.from_tasks([task(F.const, name="a", args=(1,))]))
+            store.finish_run(run_id, "SUCCESS")
+        return {"action": "run", "flow": flow, "run_id": None}
+
+
+def test_run_flow_finds_the_new_run_id(flows, tmp_path):
+    db = tmp_path / "s.db"
+    box = Toolbox(flows, db, runs=RecordingLink(db))
+    result = call(box, "run_flow", {"name": "hello"})
+    assert result["state"] == "started"
+    assert result["run_id"]
+    assert result["database"] == str(db.resolve())
+    assert result["dashboard"].startswith("http://")
+    run = call(box, "get_run", {"run_id": result["run_id"]})
+    assert run["status"] == "SUCCESS"
+    assert run["finished"]
+    assert run["steps"][0]["name"] == "a"
+    listed = call(box, "list_runs", {"flow": "hello"})
+    assert [r["run_id"] for r in listed["runs"]] == [result["run_id"]]
+
+
+def test_run_flow_reports_a_queued_run(box):
+    result = call(box, "run_flow", {"name": "hello"})
+    assert result == {
+        "state": "queued",
+        "position": 1,
+        "dashboard": "http://127.0.0.1:1",
+        "database": str(box.db),
+    }
+
+
+def test_unknown_runs_and_limits(box):
+    with pytest.raises(ToolError, match="no run"):
+        call(box, "get_run", {"run_id": "nope"})
+    with pytest.raises(ToolError, match="limit"):
+        call(box, "list_runs", {"limit": 0})
