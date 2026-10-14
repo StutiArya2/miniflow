@@ -14,6 +14,9 @@ Endpoints:
 ``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
 ``POST /api/control/partial``      ``{"flow": name, "step": name}``: run through one step
 ``POST /api/control/cancel``       ``{}``: stop the active run
+``GET /api/blocks/drafts``          pending block source, hashes and static checks
+``POST /api/blocks/drafts/approve``  {"name", "sha256"}: approve reviewed code
+``POST /api/blocks/drafts/discard``  {"name", "sha256"}: discard reviewed draft
 ``POST /api/flows/upload-csv``      raw CSV bytes; save in the flow workspace
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
@@ -44,6 +47,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from miniflow.agent.drafts import DraftError, approve, discard, list_drafts
 from miniflow.flowfile import FlowFileError
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
@@ -171,6 +175,10 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         log.debug("%s - %s", self.address_string(), format % args)
 
+    def _drafts_enabled(self) -> bool:
+        """Draft review is part of editing: it needs a flows folder and a dashboard that may run."""
+        return self.server.workspace is not None and self.server.allow_run
+
     # ---------------------------------------------------------------- routing
     def do_GET(self) -> None:
         url = urlsplit(self.path)
@@ -182,6 +190,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
+            elif parts == ["api", "blocks", "drafts"] and self._drafts_enabled():
+                assert self.server.workspace is not None
+                self._send_json(list_drafts(self.server.workspace.folder))
             elif parts == ["api", "blocks"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.catalog())
             elif parts == ["api", "environments"] and self.server.workspace is not None:
@@ -286,6 +297,23 @@ class _Handler(BaseHTTPRequestHandler):
             if parts == ["api", "flows", "upload-csv"] and self.server.workspace is not None:
                 self._upload_csv()
                 return
+            if (
+                len(parts) == 4
+                and parts[:3] == ["api", "blocks", "drafts"]
+                and parts[3] in ("approve", "discard")
+                and self._drafts_enabled()
+            ):
+                assert self.server.workspace is not None
+                body = self._control_body()
+                name, digest = _text(body, "name"), _text(body, "sha256")
+                folder = self.server.workspace.folder
+                if parts[3] == "approve":
+                    added = approve(folder, name, digest)
+                    self._send_json({"added": added, "blocks": self.server.workspace.catalog()})
+                else:
+                    discard(folder, name, digest)
+                    self._send_json({"discarded": name})
+                return
             if parts == ["api", "flows", "template"] and self.server.workspace is not None:
                 body = self._control_body()
                 name = _text(body, "name")
@@ -385,6 +413,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(controller.status())
         except ControlError as exc:
             self._send_error(exc.status, str(exc))
+        except DraftError as exc:
+            reply: dict[str, Any] = {"error": str(exc)}
+            if exc.report is not None:
+                reply["checks"] = exc.report["checks"]
+            self._send_json(reply, HTTPStatus.CONFLICT)
         except WorkspaceError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except FlowFileError as exc:
