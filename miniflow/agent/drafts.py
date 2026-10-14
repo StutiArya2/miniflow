@@ -23,7 +23,9 @@ registration: top-level code is limited to imports (before the first function), 
 literal constants and a docstring; the only decorator is ``@block(...)`` with literal
 arguments (negative numbers included) and ``Setting(...)`` calls; ``block``, ``Setting`` and
 the builtin type names can't be rebound (``block`` and ``Setting`` come only from
-``from miniflow.blocks import``); defaults are literals and annotations plain type names.
+``from miniflow.blocks import``); defaults are literals and eager annotations use builtin
+types only. Custom annotations
+require ``from __future__ import annotations``.
 No star, relative or draft imports. :func:`check_source` does import the folder's *approved*
 plugin blocks, to learn which block names are taken; it never imports a draft.
 """
@@ -49,8 +51,10 @@ _NAME = re.compile(r"[a-z][a-z0-9_]{0,39}\Z")
 _PREFIX = "_draft_"
 _MAX_SOURCE = 100_000
 _KINDS = ("io", "cpu", "async")
-_RESERVED = frozenset({"Setting", "block", "str", "int", "float", "bool", "list", "dict", "object"})
-_ALLOWED_NAMES = _RESERVED
+_RESERVED = frozenset(
+    {"Setting", "block", "str", "int", "float", "bool", "list", "dict", "object", "__getattr__"}
+)
+_ALLOWED_NAMES = _RESERVED - {"__getattr__"}
 _LOCK = threading.Lock()
 
 
@@ -71,16 +75,20 @@ def _add(checks: list[dict[str, Any]], check: str, ok: bool, problem: str) -> No
     checks.append({"check": check, "ok": ok, "detail": "" if ok else problem})
 
 
-def _annotation_ok(node: ast.AST | None) -> bool:
+def _annotation_ok(node: ast.AST | None, *, postponed: bool = False) -> bool:
     """Annotations are evaluated at import: allow only names, attribute chains and subscripts."""
     if node is None:
         return True
     if isinstance(node, ast.Constant):
         return node.value is None or isinstance(node.value, str)
     if isinstance(node, ast.Name):
-        return True
+        return postponed or node.id in _RESERVED - {"block", "Setting", "__getattr__"}
     if isinstance(node, ast.Attribute):
-        return _annotation_ok(node.value) and isinstance(node.value, ast.Name | ast.Attribute)
+        return (
+            postponed
+            and _annotation_ok(node.value, postponed=True)
+            and isinstance(node.value, ast.Name | ast.Attribute)
+        )
     if isinstance(node, ast.Subscript):
         sl = node.slice
         parts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
@@ -92,12 +100,14 @@ def _annotation_ok(node: ast.AST | None) -> bool:
             isinstance(p, ast.Constant) and p.value is not None for p in parts
         ):
             return False  # only Literal[...] may subscript with a constant, e.g. not environ['X']
-        return _annotation_ok(base) and all(_annotation_ok(p) for p in parts)
+        return _annotation_ok(base, postponed=postponed) and all(
+            _annotation_ok(p, postponed=postponed) for p in parts
+        )
     if isinstance(node, ast.BinOp):
         return (
             isinstance(node.op, ast.BitOr)
-            and _annotation_ok(node.left)
-            and _annotation_ok(node.right)
+            and _annotation_ok(node.left, postponed=postponed)
+            and _annotation_ok(node.right, postponed=postponed)
         )
     return False
 
@@ -117,6 +127,19 @@ def _block_call(node: ast.Call) -> bool:
 def _plain_block_args(call: ast.Call) -> bool:
     """``@block(...)`` arguments: literals, setting types and ``Setting(...)`` calls only."""
     for n in ast.walk(call):
+        if isinstance(n, ast.Call):
+            if any(k.arg is None for k in n.keywords):
+                return False
+            if n is not call:
+                type_node = n.args[1] if len(n.args) > 1 else _keyword(n, "type")
+                if type_node is not None:
+                    types = type_node.elts if isinstance(type_node, ast.Tuple) else [type_node]
+                    if not all(
+                        isinstance(t, ast.Name)
+                        and t.id in _RESERVED - {"block", "Setting", "__getattr__"}
+                        for t in types
+                    ):
+                        return False
         if isinstance(n, ast.Call):
             if n is not call and not (isinstance(n.func, ast.Name) and n.func.id == "Setting"):
                 return False
@@ -164,7 +187,7 @@ def _import_problems(node: ast.Import | ast.ImportFrom) -> list[str]:
     for full, bound in mods:
         if full.split(".")[0].startswith(_PREFIX):
             out.append(where + "can't import another draft")
-        if bound in _RESERVED:
+        if bound in _RESERVED or bound == "__getattr__":
             plain = (
                 isinstance(node, ast.ImportFrom)
                 and module == "miniflow.blocks"
@@ -185,6 +208,18 @@ def _top_level(
         problems.append("':=' isn't allowed")
     blocks: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call]] = []
     seen_function = False
+    postponed = any(
+        isinstance(n, ast.ImportFrom)
+        and n.module == "__future__"
+        and any(a.name == "annotations" for a in n.names)
+        for n in body
+    )
+    for stmt in body:
+        for nested in ast.walk(stmt):
+            if isinstance(nested, ast.Import | ast.ImportFrom) and nested is not stmt:
+                problems += _import_problems(nested)
+            if isinstance(nested, ast.Global) and _RESERVED.intersection(nested.names):
+                problems.append("global rebinding of reserved names isn't allowed")
     for node in body:
         if isinstance(node, ast.Import | ast.ImportFrom):
             if seen_function:
@@ -196,7 +231,7 @@ def _top_level(
                 imports.append("." * node.level + (node.module or ""))
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             seen_function = True
-            if node.name in _RESERVED:
+            if node.name in _RESERVED or node.name == "__getattr__":
                 problems.append(f"line {node.lineno}: {node.name!r} is a reserved name")
             for decorator in node.decorator_list:
                 if not (isinstance(decorator, ast.Call) and _block_call(decorator)):
@@ -222,7 +257,7 @@ def _top_level(
                 problems.append(
                     f"line {node.lineno}: {node.name}() has a default that isn't a literal"
                 )
-            if not all(_annotation_ok(n) for n in notes):
+            if not all(_annotation_ok(n, postponed=postponed) for n in notes):
                 problems.append(
                     f"line {node.lineno}: {node.name}() has an annotation that isn't a plain type"
                 )
@@ -234,7 +269,7 @@ def _top_level(
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.target.id not in _RESERVED
-            and _annotation_ok(node.annotation)
+            and _annotation_ok(node.annotation, postponed=postponed)
             and (node.value is None or _literal(node.value))
         ):
             pass
