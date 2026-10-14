@@ -583,6 +583,43 @@ def _cmd_blocks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_approve_block(args: argparse.Namespace) -> int:
+    from miniflow.agent.drafts import DraftError, approve, list_drafts
+
+    folder = Path(args.flows)
+    if not folder.is_dir():
+        print(f"error: flows folder {folder} doesn't exist", file=sys.stderr)
+        return 2
+    draft = next((d for d in list_drafts(folder) if d["name"] == args.name), None)
+    if draft is None:
+        print(
+            f"error: there is no draft called {args.name!r} in {folder / 'blocks'}", file=sys.stderr
+        )
+        return 2
+    print(draft["source"].rstrip() + "\n")
+    for check in draft["checks"]:
+        detail = f": {check['detail']}" if check["detail"] else ""
+        print(f"{'ok  ' if check['ok'] else 'FAIL'} {check['check']}{detail}")
+    print("imports: " + (", ".join(draft["imports"]) or "none"))
+    if not draft["ok"]:
+        print("error: fix the failed checks first", file=sys.stderr)
+        return 1
+    try:
+        answer = input(f"Approve {args.name}? It will run with your permissions. [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("not approved")
+        return 1
+    try:
+        added = approve(folder, args.name, draft["sha256"])
+    except DraftError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"approved: {', '.join(added) or args.name}")
+    return 0
+
+
 # --------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="miniflow", description=__doc__)
@@ -732,6 +769,10 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("name", nargs="?", help="block to describe")
     b.add_argument("--blocks", action="append", metavar="DIR", help="extra folder of plugin blocks")
     b.set_defaults(func=_cmd_blocks)
+    ab = sub.add_parser("approve-block", help="review and approve a block an agent drafted")
+    ab.add_argument("name", help="the draft's block name")
+    ab.add_argument("--flows", required=True, metavar="DIR", help="folder of JSON flows")
+    ab.set_defaults(func=_cmd_approve_block)
     return parser
 
 

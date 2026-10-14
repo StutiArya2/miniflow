@@ -21,6 +21,7 @@ from miniflow.agent.drafts import (
     write_draft,
 )
 from miniflow.blocks import all_blocks, load_plugins
+from miniflow.cli import main
 from miniflow.ui import DashboardServer
 from tests.test_ui import call, get
 
@@ -444,3 +445,37 @@ def test_the_editor_ships_the_pending_blocks_panel(dashboard):
     ):
         assert marker in page
     assert b'"studioDraftsInit"' in get(server, "/static/editor.js")[2]
+
+
+def test_approve_block_asks_first(flows, monkeypatch, capsys):
+    write_draft(flows, (name := uniq()), good(name))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    assert main(["approve-block", name, "--flows", str(flows)]) == 1
+    out = capsys.readouterr().out
+    assert "Repeat text." in out
+    assert "not approved" in out
+    assert list_drafts(flows)
+
+
+def test_approve_block_with_yes(flows, monkeypatch, capsys):
+    write_draft(flows, (name := uniq()), good(name))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert main(["approve-block", name, "--flows", str(flows)]) == 0
+    assert (flows / "blocks" / f"{name}.py").exists()
+    assert f"approved: {name}" in capsys.readouterr().out
+
+
+def test_approve_block_with_no_such_draft(flows, capsys):
+    assert main(["approve-block", "nothing", "--flows", str(flows)]) == 2
+    assert "no draft" in capsys.readouterr().err
+
+
+def test_approve_block_with_closed_stdin_keeps_the_draft(flows, monkeypatch, capsys):
+    write_draft(flows, (name := uniq()), good(name))
+
+    def closed(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", closed)
+    assert main(["approve-block", name, "--flows", str(flows)]) == 1
+    assert list_drafts(flows)
