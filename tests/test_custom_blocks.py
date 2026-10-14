@@ -130,6 +130,18 @@ def test_custom_input_errors_are_reported_before_running(
                 "steps": {"count": {"custom_block": "word_count", "settings": {"text": 42}}},
             },
         )
+    with pytest.raises(FlowFileError, match="unknown setting 'extra'"):
+        load_json_flow(
+            tmp_path / "extra.json",
+            _source={
+                "steps": {
+                    "count": {
+                        "custom_block": "word_count",
+                        "settings": {"text": "hello", "extra": 1},
+                    }
+                }
+            },
+        )
 
 
 def test_custom_block_api(library: CustomBlockLibrary, tmp_path: Path) -> None:
