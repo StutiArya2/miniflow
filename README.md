@@ -125,8 +125,12 @@ MiniFlow reuses results from the latest run when their step configuration, refer
 environment values, code, local file inputs and upstream results still match. A changed input
 reruns the affected branch; each partial run appears in normal run history.
 The equivalent CLI command is `miniflow run examples/sales_report.json --until by_region --reuse latest`.
-The **Flow tests** panel accepts sample results for selected steps and expected results for
+The **Flow tests** tab accepts sample results for selected steps and expected results for
 downstream steps. Tests run only the needed branch and leave the main run database untouched.
+**Flow tests**, **Schedules**, **When the flow ends**, **History** and **Parameters** are tabs;
+select one to edit that part of the workflow. While this flow is running, **Stop workflow**
+in the editor stops its active run. The same action is available on the selected run's page.
+Scheduled future runs remain enabled until you remove their schedule.
 A step with `"flow": "parts/clean.json"` can reuse another JSON flow; its declared `params`
 become settings, and its `outputs` become the result of that step. Inner steps remain visible
 in the run graph.
@@ -147,7 +151,7 @@ in the run graph.
   item count, item counts on the arrows, and a sample of the result in the settings panel.
   Steps whose settings changed since that run, and the steps after them, are greyed out.
 
-For unattended local runs, add a schedule in the editor's **Schedules** panel and start
+For unattended local runs, add a schedule in the editor's **Schedules** tab and start
 `miniflow serve --flows examples --db miniflow.db`. A flow can run every N seconds, daily at
 local time, or from a five-field cron expression such as `0 9 * * mon-fri`. Set `catch_up` to
 run once after the dashboard was off during scheduled times. A file watch such as
@@ -200,10 +204,10 @@ only on `http.server`, Server-Sent Events and plain JavaScript/SVG. It shows:
 
 With `--flows DIR`, a control strip at the top lets you pick a `.py` or `.json` flow in `DIR`,
 set **Simulate failures** (a fault rate passed to the run as `MINIFLOW_FAIL_RATE`) from the **New run** menu and press **Start run**. While it runs
-you can **Cancel** it, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
+you can **Stop workflow**, which interrupts it like Ctrl+C, so it ends INTERRUPTED. A failed or
 interrupted run gets a **Resume** button, which reruns only its unfinished tasks. Each
-run is a separate `miniflow run`/`resume` process writing to the same database, and one runs at
-a time. Stopping the dashboard cancels the run it started.
+run is a separate `miniflow run`/`resume` process writing to the same database. Stopping the
+dashboard cancels the runs it started.
 
 Options: `--port`, `--no-browser`, `--no-ui-wait` (close the dashboard when the run ends).
 The server only binds to `127.0.0.1`. Without `--flows` it is read-only. With it, the control

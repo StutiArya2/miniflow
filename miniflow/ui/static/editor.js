@@ -12,7 +12,37 @@ const Studio = {
   runData: null,             // run shown on the canvas: {run, graph, tasks}
   signatures: {},            // current step signatures from the last validation
   wire: null,                // selected connection: {from, to}
+  activePanel: "test",       // one workflow-settings tab is visible at a time
+  stopping: false,
 };
+
+const STUDIO_PANELS = ["test", "schedule", "finish", "history", "params"];
+
+function studioSelectPanel(name, focus = false) {
+  if (!STUDIO_PANELS.includes(name)) return;
+  Studio.activePanel = name;
+  for (const key of STUDIO_PANELS) {
+    const tab = document.getElementById(`studio-${key}-tab`);
+    const panel = document.getElementById(`studio-${key}-panel`);
+    const selected = key === name;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    panel.hidden = !selected;
+  }
+  if (focus) document.getElementById(`studio-${name}-tab`).focus();
+  if (name === "finish") studioRenderFinish(true);
+  if (name === "history") studioLoadVersions();
+}
+
+function studioPanelKeydown(event) {
+  const index = STUDIO_PANELS.indexOf(Studio.activePanel);
+  const next = event.key === "ArrowRight" ? (index + 1) % STUDIO_PANELS.length
+    : event.key === "ArrowLeft" ? (index + STUDIO_PANELS.length - 1) % STUDIO_PANELS.length
+      : event.key === "Home" ? 0 : event.key === "End" ? STUDIO_PANELS.length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  studioSelectPanel(STUDIO_PANELS[next], true);
+}
 
 function studioMessage(message, error = false) {
   const el = document.getElementById("studio-message");
@@ -27,8 +57,9 @@ function studioShow(show) {
   studioNav(show ? "editor" : Studio.section === "editor" ? "examples" : Studio.section);
   try { history.replaceState(null, "", show ? "#editor" : S.runId ? `#run=${S.runId}` : location.pathname); }
   catch { /* sandboxed */ }
-  if (show) { studioRender(); studioLoadRuns(); studioScheduleCheck(); }
+  if (show) { studioSelectPanel(Studio.activePanel); studioRender(); studioLoadRuns(); studioScheduleCheck(); }
   else loadRuns();
+  studioRenderStop();
 }
 
 /* Top navigation: Examples | Runs | Editor. The current section is marked for the eye and
@@ -714,7 +745,7 @@ function studioRenderTests() {
   add.onclick = () => {
     cases.push({ name: `case ${cases.length + 1}`, inputs: {}, expect: {} });
     Studio.testIndex = cases.length - 1; studioCommit();
-    document.getElementById("studio-test-panel").open = true;
+    studioSelectPanel("test");
     studioRenderTests();
   };
   toolbar.append(select, add);
@@ -739,7 +770,7 @@ async function studioTest() {
     const passed = reports.filter((report) => report.passed).length;
     studioMessage(`${passed}/${reports.length} tests passed\n` + reports.map((report) =>
       `${report.passed ? "PASS" : "FAIL"} ${report.name}${report.problems.length ? ": " + report.problems.join("; ") : ""}`).join("\n"), passed !== reports.length);
-    document.getElementById("studio-test-panel").open = true;
+    studioSelectPanel("test");
   } catch (error) { studioMessage(String(error), true); }
 }
 
@@ -1057,8 +1088,8 @@ function studioRenderFinish(force = false) {
   const host = document.getElementById("studio-finish-editor");
   if (!host) return;
   const panel = document.getElementById("studio-finish-panel");
-  // a drawer that is closed doesn't need its forms; rebuilding open ones keeps them current
-  if (panel && !panel.open) {
+  // A hidden tab doesn't need its forms; rebuild it when selected.
+  if (panel && panel.hidden) {
     const count = ["on_success", "on_failure"].filter((key) => Studio.flow[key]).length
       + Object.keys(Studio.flow.outputs || {}).length;
     document.getElementById("studio-finish-count").textContent = count ? `(${count} set)` : "";
@@ -1107,10 +1138,38 @@ async function studioRun() {
       flow: Studio.name, fail_rate: 0,
       environment: document.getElementById("studio-environment").value,
     });
-    studioShow(false);
+    studioGo("runs");
     studioMessage(`${Studio.name} started.`);
     setTimeout(loadRuns, 500);
   } catch (error) { studioMessage(String(error), true); }
+}
+
+function studioActiveRun() {
+  return (S.control?.running || []).find((item) => item.flow === Studio.name && item.run_id);
+}
+
+function studioRenderStop() {
+  const button = document.getElementById("studio-stop");
+  if (!button) return;
+  const active = studioActiveRun();
+  button.disabled = !active || Studio.stopping || S.controlBusy;
+  button.title = active ? `Stop the active run of ${Studio.name}; schedules stay enabled`
+    : "Available while this flow is running";
+}
+
+async function studioStop() {
+  const active = studioActiveRun();
+  if (!active || Studio.stopping) return;
+  Studio.stopping = true;
+  studioRenderStop();
+  try {
+    await studioApi("/api/control/cancel", { run_id: active.run_id });
+    studioMessage(`Stopped the running ${active.flow} workflow.`);
+    await loadControl();
+    await loadRuns();
+    await studioLoadRuns();
+  } catch (error) { studioMessage(`Could not stop the workflow: ${error}`, true); }
+  finally { Studio.stopping = false; studioRenderStop(); }
 }
 
 async function studioPartial() {
@@ -1121,7 +1180,7 @@ async function studioPartial() {
     await studioApi("/api/control/partial", {
       flow: Studio.name, step, environment: document.getElementById("studio-environment").value,
     });
-    studioShow(false);
+    studioGo("runs");
     setTimeout(loadRuns, 500);
   } catch (error) { studioMessage(String(error), true); }
 }
@@ -1182,6 +1241,7 @@ async function studioInit() {
     document.getElementById("studio-test").onclick = studioTest;
     document.getElementById("studio-save").onclick = () => studioValidate(true);
     document.getElementById("studio-run").onclick = studioRun;
+    document.getElementById("studio-stop").onclick = studioStop;
     document.getElementById("studio-partial").onclick = studioPartial;
     document.getElementById("studio-undo").onclick = () => studioUndoRedo(-1);
     document.getElementById("studio-redo").onclick = () => studioUndoRedo(1);
@@ -1193,10 +1253,10 @@ async function studioInit() {
     document.getElementById("studio-zoom-out").onclick = () => studioZoomButton(0.8);
     document.getElementById("studio-fit").onclick = studioFit;
     document.getElementById("studio-run-data").onchange = () => studioLoadRuns();
-    document.getElementById("studio-finish-panel").ontoggle = () => studioRenderFinish(true);
-    document.getElementById("studio-history-panel").ontoggle = (event) => {
-      if (event.target.open) studioLoadVersions();
-    };
+    for (const name of STUDIO_PANELS) {
+      document.getElementById(`studio-${name}-tab`).onclick = () => studioSelectPanel(name);
+    }
+    document.querySelector(".studio-section-tabs").onkeydown = studioPanelKeydown;
     studioViewInit();
     studioHistoryReset();
     if (location.hash === "#editor") studioShow(true);

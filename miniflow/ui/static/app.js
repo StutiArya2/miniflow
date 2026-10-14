@@ -297,6 +297,7 @@ function renderControl() {
   $("new-run").setAttribute("aria-expanded", String(!!(c && S.newRunOpen)));
   renderEmpty();
   renderResume();
+  if (typeof studioRenderStop === "function") studioRenderStop();
   if (!c) return;
   const select = $("ctl-flow");
   if ([...select.options].map((o) => o.value).join() !== c.flows.join()) {
@@ -314,9 +315,10 @@ function renderControl() {
       running.length ? `Running ${running.map((item) => item.flow).join(", ")}` : "",
       c.queued?.length ? ` · ${c.queued.length} waiting` : "");
   }
-  $("ctl-cancel").hidden = !c.active;
+  const selectedRun = (c.running || []).find((item) => item.run_id && item.run_id === S.runId);
+  $("ctl-cancel").hidden = !selectedRun;
   $("ctl-cancel").disabled = S.controlBusy;
-  if (c.active) $("ctl-cancel").title = "Cancel the selected active run, or the oldest active run";
+  if (selectedRun) $("ctl-cancel").title = `Stop the active run of ${selectedRun.flow}; schedules stay enabled`;
   const error = S.controlError || c.error;
   $("ctl-error").hidden = !error;
   $("ctl-error").textContent = error || "";
@@ -826,7 +828,7 @@ function init() {
   $("ctl-resume").addEventListener("click", () => control("resume", { run_id: S.runId, fail_rate: failRate() }));
   $("ctl-cancel").addEventListener("click", () => {
     const selected = (S.control?.running || []).find((item) => item.run_id === S.runId);
-    control("cancel", selected ? { run_id: selected.run_id } : {});
+    if (selected?.run_id) control("cancel", { run_id: selected.run_id });
   });
   // Check the controls every second while a run is active, otherwise every 3 s.
   let ticks = 0;
