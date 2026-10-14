@@ -179,8 +179,17 @@ Design: `docs/superpowers/specs/2026-10-14-mcp-server-design.md`; plan:
 - One dashboard owns each database (`<db>.owner.json`); the MCP server sends runs to it.
 - Block drafts are checked with `ast` only and approved by a person in the Editor's Pending
   blocks panel or with `miniflow approve-block`.
-- Next: an "Ask Claude" panel in the Editor on the same tools; a conflict check in the
-  Editor's own save.
+- Follow-up: a conflict check in the Editor's own save.
+
+### V4 milestone 2: Claude in the Editor ✅
+- Ask Claude: streaming conversation, saved-flow context, tool activity, Stop and New chat.
+- Connect Claude: local CLI login/check plus copyable Claude Code and Claude Desktop MCP setup.
+- Standard-library subprocess service uses only MiniFlow MCP tools; bounded conversation and
+  output, isolated process groups, same-origin protection for private chat reads and actions.
+- Uses installed Claude Code credentials. A stored login is not proof the OAuth token is valid;
+  expired authentication directs the person to sign in again. No account credentials exposed.
+- Design approved by the user; themes and 375px layout verified. Installed macOS app rebuilt.
+
 
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
