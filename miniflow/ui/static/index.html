@@ -86,6 +86,7 @@
       <div class="studio-layout">
         <aside class="studio-palette panel">
           <h2>Blocks</h2>
+          <button type="button" id="studio-drafts" class="btn studio-drafts-button" hidden>Pending blocks</button>
           <label class="sr-only" for="studio-search">Search blocks</label>
           <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
           <div id="studio-blocks" class="studio-blocks"></div>
@@ -239,12 +240,23 @@
     </section>
   </main>
 
+  <dialog id="studio-drafts-dialog" class="studio-drafts-dialog" aria-labelledby="studio-drafts-title">
+    <header>
+      <h2 id="studio-drafts-title">Pending blocks</h2>
+      <button type="button" id="studio-drafts-close" class="btn">Close</button>
+    </header>
+    <p class="hint">An agent drafted these blocks. Nothing in them runs until you approve one, and an approved block runs with your permissions, so read the code first.</p>
+    <p id="studio-drafts-error" class="studio-message error" hidden></p>
+    <div id="studio-drafts-list"></div>
+  </dialog>
+
   <script src="/static/charts.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/editor-history.js"></script>
   <script src="/static/editor-view.js"></script>
   <script src="/static/editor-versions.js"></script>
   <script src="/static/editor-data.js"></script>
+  <script src="/static/editor-drafts.js"></script>
   <script src="/static/editor.js"></script>
 </body>
 </html>

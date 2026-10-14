@@ -183,7 +183,13 @@ def test_editor_scripts_are_served(tmp_path: Path):
 
     with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
         url = urlsplit(server.url)
-        for name in ("editor-history.js", "editor-view.js", "editor-versions.js", "editor-data.js"):
+        for name in (
+            "editor-history.js",
+            "editor-view.js",
+            "editor-versions.js",
+            "editor-data.js",
+            "editor-drafts.js",
+        ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")
             res = conn.getresponse()
@@ -256,7 +262,13 @@ def test_editor_reports_parts_that_failed_to_load(tmp_path: Path):
         editor = conn.getresponse().read().decode()
         conn.close()
         served = {}
-        for name in ("editor-history.js", "editor-view.js", "editor-versions.js", "editor-data.js"):
+        for name in (
+            "editor-history.js",
+            "editor-view.js",
+            "editor-versions.js",
+            "editor-data.js",
+            "editor-drafts.js",
+        ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")
             served[name] = conn.getresponse().read().decode()
