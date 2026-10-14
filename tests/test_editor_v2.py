@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from miniflow.ui import DashboardServer
-from miniflow.ui.author import FlowWorkspace, WorkspaceError, flow_diff
+from miniflow.ui.author import FlowWorkspace, VersionConflict, WorkspaceError, flow_diff
 from tests.test_author import request
 
 V1 = {"steps": {"hello": {"block": "log", "settings": {"message": "Hello"}}}}
@@ -302,3 +302,83 @@ def test_dashboard_has_navigation_tabs_that_work_without_the_editor(tmp_path: Pa
     assert 'id="brand-home"' in page
     # the tabs are wired before the editor's own parts are checked
     assert editor.index("studioNavInit();") < editor.index("const missing = studioPartsMissing();")
+
+
+def test_file_version_tracks_the_bytes(ws: FlowWorkspace):
+    assert ws.file_version("demo") is None
+    ws.save("demo", V1)
+    first = ws.file_version("demo")
+    assert first is not None
+    assert len(first) == 16
+    ws.save("demo", V2)
+    assert ws.file_version("demo") != first
+
+
+def test_save_with_a_version_check(ws: FlowWorkspace):
+    ws.save("demo", V1, expect_version=True, base_version=None)  # new flow
+    with pytest.raises(VersionConflict) as info:
+        ws.save("demo", V2, expect_version=True, base_version=None)  # it exists now
+    assert info.value.current == ws.file_version("demo")
+    with pytest.raises(VersionConflict):
+        ws.save("demo", V2, expect_version=True, base_version="0" * 16)
+    ws.save("demo", V2, expect_version=True, base_version=ws.file_version("demo"))
+    assert ws.read("demo") == V2
+
+
+def _competing_save(folder, version, message, ready, start, result):
+    import time
+
+    from miniflow.ui import author
+
+    real_sync = author.os.fsync
+
+    def slow_sync(fd):
+        real_sync(fd)
+        time.sleep(0.15)
+
+    author.os.fsync = slow_sync
+    workspace = FlowWorkspace(folder)
+    ready.put(True)
+    start.wait(10)
+    try:
+        workspace.save(
+            "demo",
+            {"steps": {"a": {"block": "log", "settings": {"message": message}}}},
+            expect_version=True,
+            base_version=version,
+        )
+    except VersionConflict:
+        result.put("conflict")
+    else:
+        result.put("saved")
+
+
+def test_version_checks_serialize_saves_across_spawned_processes(ws):
+    import multiprocessing
+
+    ws.save("demo", V1)
+    ctx = multiprocessing.get_context("spawn")
+    ready, result = ctx.Queue(), ctx.Queue()
+    start = ctx.Event()
+    children = [
+        ctx.Process(
+            target=_competing_save,
+            args=(ws.folder, ws.file_version("demo"), str(i), ready, start, result),
+        )
+        for i in range(2)
+    ]
+    try:
+        for child in children:
+            child.start()
+        for _ in children:
+            ready.get(timeout=10)
+        start.set()
+        assert sorted(result.get(timeout=10) for _ in children) == ["conflict", "saved"]
+    finally:
+        for child in children:
+            child.join(10)
+            if child.is_alive():
+                child.kill()
+                child.join(5)
+        ready.close()
+        result.close()
