@@ -53,6 +53,10 @@
         <button type="button" id="studio-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Run</button>
         <button type="button" id="studio-stop" class="btn danger" disabled title="Available while this flow is running">■ Stop workflow</button>
         <button type="button" id="studio-partial" class="btn">Run up to selected</button>
+        <div class="studio-claude-actions" id="studio-claude-actions" hidden>
+          <button type="button" id="studio-connect-claude" class="btn">Connect Claude</button>
+          <button type="button" id="studio-ask-claude" class="btn" aria-controls="studio-claude-pane" aria-expanded="false">Ask Claude</button>
+        </div>
       </div>
       <div class="studio-sections">
         <div class="studio-section-tabs" role="tablist" aria-label="Workflow settings">
@@ -240,6 +244,43 @@
     </section>
   </main>
 
+  <aside id="studio-claude-pane" class="studio-claude-pane" aria-labelledby="studio-claude-title" hidden>
+    <header><h2 id="studio-claude-title">Ask Claude</h2><button type="button" id="studio-claude-close" class="btn" aria-label="Close Claude chat">Close</button></header>
+    <p class="hint">Build, change or explain a saved flow. Review custom Python code in Pending blocks.</p>
+    <p id="studio-claude-context" class="hint"></p>
+    <div class="claude-chat-actions"><button type="button" id="studio-claude-reload" class="btn">Reload saved flow</button><button type="button" id="studio-claude-new" class="btn">New chat</button></div>
+    <div id="studio-claude-messages" class="claude-messages" role="log" aria-label="Claude conversation" aria-live="polite"></div>
+    <p id="studio-claude-error" class="studio-message error" role="alert" hidden></p>
+    <form id="studio-claude-form" class="claude-composer">
+      <label for="studio-claude-prompt" class="sr-only">Message Claude</label>
+      <textarea id="studio-claude-prompt" rows="3" maxlength="12000" placeholder="Ask Claude to help with your flow…"></textarea>
+      <div><span id="studio-claude-state" class="hint" role="status"></span><button type="button" id="studio-claude-stop" class="btn danger" hidden>Stop</button><button type="submit" id="studio-claude-send" class="btn primary">Send</button></div>
+      <p class="hint">Messages and tool results are sent to Claude. Uses your Claude Code account.</p>
+    </form>
+  </aside>
+
+  <dialog id="studio-claude-dialog" class="studio-claude-dialog" aria-labelledby="studio-claude-connect-title">
+    <header><h2 id="studio-claude-connect-title">Connect Claude</h2><button type="button" id="studio-claude-connect-close" class="btn">Close</button></header>
+    <div class="claude-connect-tabs" role="tablist" aria-label="Claude connection">
+      <button type="button" id="claude-tab-inside" role="tab" aria-controls="claude-connect-inside" aria-selected="true">Inside MiniFlow</button>
+      <button type="button" id="claude-tab-code" role="tab" aria-controls="claude-connect-code" aria-selected="false" tabindex="-1">Claude Code</button>
+      <button type="button" id="claude-tab-desktop" role="tab" aria-controls="claude-connect-desktop" aria-selected="false" tabindex="-1">Claude Desktop</button>
+    </div>
+    <section id="claude-connect-inside" role="tabpanel" aria-labelledby="claude-tab-inside">
+      <h3 id="claude-login-title">Checking connection…</h3><p id="claude-login-detail" class="hint"></p>
+      <div class="claude-chat-actions"><button type="button" id="claude-login" class="btn primary">Sign in with Claude</button><button type="button" id="claude-check" class="btn">Check connection</button></div>
+      <p class="hint">If the browser sign-in does not finish, run this command in Terminal:</p><textarea id="claude-login-command" class="claude-config" readonly aria-label="Claude sign-in command" rows="2"></textarea><button type="button" class="btn claude-copy" data-copy="claude-login-command">Copy sign-in command</button>
+      <p class="hint">Claude Code is required for chat. <a href="https://code.claude.com/docs/en/quickstart" target="_blank" rel="noopener noreferrer">Installation instructions</a></p>
+    </section>
+    <section id="claude-connect-code" role="tabpanel" aria-labelledby="claude-tab-code" hidden>
+      <p>Run this command in Terminal to give Claude Code access to this MiniFlow workspace.</p><textarea id="claude-code-command" class="claude-config" readonly aria-label="Claude Code setup command" rows="7"></textarea><button type="button" class="btn claude-copy" data-copy="claude-code-command">Copy setup command</button><p class="hint">Restart your Claude Code session after adding the server. An existing server named miniflow may need removal first.</p>
+    </section>
+    <section id="claude-connect-desktop" role="tabpanel" aria-labelledby="claude-tab-desktop" hidden>
+      <p>In Claude Desktop, open Settings → Developer → Edit Config. Merge this entry into your existing mcpServers, then restart Claude Desktop.</p><textarea id="claude-desktop-config" class="claude-config" readonly aria-label="Claude Desktop MCP configuration" rows="12"></textarea><button type="button" class="btn claude-copy" data-copy="claude-desktop-config">Copy configuration</button><p class="hint">These paths point to this MiniFlow installation and its saved flows. Custom block drafts still require review in MiniFlow.</p>
+    </section>
+    <p id="claude-connect-message" class="studio-message" role="status"></p>
+  </dialog>
+
   <dialog id="studio-drafts-dialog" class="studio-drafts-dialog" aria-labelledby="studio-drafts-title">
     <header>
       <h2 id="studio-drafts-title">Pending blocks</h2>
@@ -257,6 +298,7 @@
   <script src="/static/editor-versions.js"></script>
   <script src="/static/editor-data.js"></script>
   <script src="/static/editor-drafts.js"></script>
+  <script src="/static/editor-claude.js"></script>
   <script src="/static/editor.js"></script>
 </body>
 </html>

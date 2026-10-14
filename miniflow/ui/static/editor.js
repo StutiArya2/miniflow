@@ -1259,6 +1259,7 @@ async function studioInit() {
     document.querySelector(".studio-section-tabs").onkeydown = studioPanelKeydown;
     studioViewInit();
     studioDraftsInit();
+    studioClaudeInit();
     studioHistoryReset();
     if (location.hash === "#editor") studioShow(true);
   } catch { /* read-only dashboard has no editor */ }

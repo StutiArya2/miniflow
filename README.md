@@ -300,6 +300,24 @@ For Claude Desktop, add this to its `claude_desktop_config.json`:
   Claude Code the review is a check, and its own permission prompts are the guard.
 - `--read-only` keeps only the tools that change nothing; `--no-runs` drops the run tools.
 
+### Claude in the Editor
+
+On a dashboard started with `miniflow serve --flows DIR`, the Editor has **Ask Claude**
+and **Connect Claude** buttons. Ask Claude uses the installed Claude Code CLI and its
+existing account login; no API key is entered in MiniFlow. Connect Claude provides browser
+sign-in, a connection check, and copyable configuration for Claude Code or Claude Desktop.
+The configuration uses the running Python interpreter and absolute workspace paths, including
+bundled runtime paths in the macOS app.
+
+Chat works with saved flows. Save your edits before asking Claude to change them, and use
+**Reload saved flow** after an agent saves changes. The conversation is kept in memory until
+**New chat** or dashboard shutdown (up to 12 exchanges). Stop cancels the current response;
+custom block drafts still need human approval in Pending blocks. The chat client has only
+MiniFlow's MCP tools, with builtin tools, custom skills, hooks and inherited MCP servers disabled.
+Messages and tool results are sent to Claude under your existing account's usage terms.
+A local login check can find stored credentials even when their token has expired; an
+expired-token response directs you back to Connect Claude to sign in again.
+
 ## Evaluation (spec §3.8)
 
 ```bash

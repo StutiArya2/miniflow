@@ -32,3 +32,5 @@ miniflow_reports/
 
 # editor version history (local)
 .history/
+
+.superdesign/tmp/

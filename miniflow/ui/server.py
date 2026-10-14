@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from miniflow.agent.chat import ChatError, ClaudeChat
 from miniflow.agent.drafts import DraftError, approve, discard, list_drafts
 from miniflow.flowfile import FlowFileError
 from miniflow.states import State
@@ -66,6 +67,7 @@ _STATIC = {
     "app.js": "text/javascript; charset=utf-8",
     "charts.js": "text/javascript; charset=utf-8",
     "editor-drafts.js": "text/javascript; charset=utf-8",
+    "editor-claude.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
     "editor-history.js": "text/javascript; charset=utf-8",
     "editor-view.js": "text/javascript; charset=utf-8",
@@ -191,6 +193,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
+            elif parts[:2] == ["api", "agent"] and self.server.chat is not None:
+                self._agent_origin()
+                if parts == ["api", "agent", "setup"]:
+                    self._send_json(self.server.chat.setup())
+                elif parts == ["api", "agent", "chat"]:
+                    self._send_json(self.server.chat.snapshot())
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "not found")
             elif parts == ["api", "blocks", "drafts"] and self._drafts_enabled():
                 assert self.server.workspace is not None
                 self._send_json(list_drafts(self.server.workspace.folder))
@@ -249,6 +259,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.server.schedule_service.snapshot())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except (ChatError, ControlError) as exc:
+            self._send_error(exc.status, str(exc))
         except DraftError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -294,6 +306,24 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if parts[:2] == ["api", "agent"] and self.server.chat is not None:
+                body = self._control_body(65536)
+                chat = self.server.chat
+                if parts == ["api", "agent", "send"]:
+                    self._send_json(
+                        chat.send(_text(body, "message"), body.get("flow", "")), HTTPStatus.ACCEPTED
+                    )
+                elif parts == ["api", "agent", "stop"]:
+                    chat.stop(_text(body, "turn"))
+                    self._send_json(chat.snapshot())
+                elif parts == ["api", "agent", "clear"]:
+                    self._send_json(chat.clear())
+                elif parts == ["api", "agent", "login"]:
+                    chat.login()
+                    self._send_json({"started": True}, HTTPStatus.ACCEPTED)
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "not found")
+                return
             if len(parts) == 4 and parts[:2] == ["api", "hooks"]:
                 self._hook(parts[2], parts[3])
                 return
@@ -421,6 +451,8 @@ class _Handler(BaseHTTPRequestHandler):
             if exc.report is not None:
                 reply["checks"] = exc.report["checks"]
             self._send_json(reply, HTTPStatus.CONFLICT)
+        except ChatError as exc:
+            self._send_error(exc.status, str(exc))
         except WorkspaceError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except FlowFileError as exc:
@@ -436,6 +468,15 @@ class _Handler(BaseHTTPRequestHandler):
             and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
             and self.headers.get("X-MiniFlow-Action") == "run"
         )
+
+    def _agent_origin(self) -> None:
+        """Chat contains private conversation text; guard reads as well as writes."""
+        hosts = self.server.hosts
+        if self.headers.get("Host", "").lower() not in hosts:
+            raise ControlError("unexpected Host header", HTTPStatus.FORBIDDEN)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {f"http://{h}" for h in hosts}:
+            raise ControlError("requests from other sites are not allowed", HTTPStatus.FORBIDDEN)
 
     def _control_body(self, limit: int = _MAX_BODY) -> dict[str, Any]:
         """Refuse requests that didn't come from the dashboard page, then parse the body."""
@@ -628,6 +669,11 @@ class DashboardServer(ThreadingHTTPServer):
         self.api = _Api(self.store)
         try:
             self.workspace = None if flows is None else FlowWorkspace(flows)
+            self.chat = (
+                ClaudeChat(self.workspace.folder, Path(self.store.path))
+                if self.workspace is not None and allow_run
+                else None
+            )
             self.controller = (
                 None
                 if flows is None
@@ -700,6 +746,8 @@ class DashboardServer(ThreadingHTTPServer):
         return self
 
     def stop(self) -> None:
+        if self.chat is not None:
+            self.chat.shutdown()
         if self.schedule_service is not None:
             self.schedule_service.stop()
         if self.controller is not None:
