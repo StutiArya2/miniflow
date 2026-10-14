@@ -316,7 +316,9 @@ custom block drafts still need human approval in Pending blocks. The chat client
 MiniFlow's MCP tools, with builtin tools, custom skills, hooks and inherited MCP servers disabled.
 Messages and tool results are sent to Claude under your existing account's usage terms.
 A local login check can find stored credentials even when their token has expired; an
-expired-token response directs you back to Connect Claude to sign in again.
+expired-token response directs you back to Connect Claude to sign in again. A turn can run
+for up to 30 minutes while making progress; five minutes without streaming activity stops
+a stalled client. Saved workflows and drafts survive a cancelled or timed-out turn.
 
 ## Evaluation (spec §3.8)
 
