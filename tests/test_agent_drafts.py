@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 import uuid
 from pathlib import Path
 from textwrap import dedent
@@ -169,3 +170,95 @@ def test_any_text_gives_a_report_never_an_exception(flows, source):
 def test_deeply_nested_source_is_refused_not_crashed(flows):
     report = check_source(flows, "deep", "X = " + "(" * 5000 + "1" + ")" * 5000 + "\n")
     assert not report["ok"]
+
+
+BYPASSES = {
+    "alias Setting": "from os import system as Setting\nfrom miniflow.blocks import block\n"
+    "@block('NAME', settings=[Setting('echo PWNED')])\ndef run(**kw):\n    pass\n",
+    "alias block": "from os import system as block\n@block('NAME', 'echo PWNED')\n"
+    "def run():\n    pass\n",
+    "walrus default": "import os\nfrom miniflow.blocks import block\n"
+    "def g(x=(Setting := os.system)):\n    pass\n@block('NAME')\ndef run():\n    pass\n",
+    "star import": "from os import *\n",
+    "relative import": "from . import x\n",
+    "draft import": "import _draft_zq_e\n",
+    "huge default": "def run(x=9**9**9):\n    pass\n",
+    "annotation": "import os\nX: os.environ['HOME'] = 1\n",
+    "reserved target": "str = 1\n",
+    "reserved function": "def int():\n    pass\n",
+}
+
+
+@pytest.mark.parametrize("case", sorted(BYPASSES))
+def test_bypasses_are_refused(flows, case):
+    name = uniq()
+    report = check_source(flows, name, BYPASSES[case].replace("NAME", name))
+    assert not report["ok"]
+    assert "top-level code" in failed(report)
+
+
+def test_plain_annotations_are_allowed(flows):
+    name = uniq()
+    source = good(name).replace(
+        "def run(text, times):",
+        "def run(text: str, times: int, rows: list[dict[str, int]] | None = None) -> dict:",
+    )
+    assert check_source(flows, name, source)["ok"]
+
+
+def test_a_draft_changed_after_listing_is_not_installed(flows):
+    draft = write_draft(flows, (name := uniq()), good(name))
+    write_draft(flows, name, good(name).replace("LIMIT = 3", "LIMIT = 9"), replace=True)
+    with pytest.raises(DraftError, match="changed"):
+        approve(flows, name, draft["sha256"])
+    assert not (flows / "blocks" / f"{name}.py").exists()
+
+
+def test_the_installed_file_is_the_approved_bytes(flows, monkeypatch):
+    import miniflow.agent.drafts as drafts
+
+    draft = write_draft(flows, (name := uniq()), good(name))
+    swapped = good(name).replace("LIMIT = 3", "LIMIT = 9")
+    real = drafts.check_source
+
+    def swap_after_check(*args):
+        report = real(*args)
+        (flows / "blocks" / f"_draft_{name}.py").write_text(swapped)
+        return report
+
+    monkeypatch.setattr(drafts, "check_source", swap_after_check)
+    approve(flows, name, draft["sha256"])
+    assert (flows / "blocks" / f"{name}.py").read_text() == good(name)
+    assert [d["source"] for d in list_drafts(flows)] == [swapped]
+
+
+def test_approve_rolls_back_when_the_import_exits(flows):
+    name = uniq()
+    source = good(name) + "\nraise SystemExit(3)\n"
+    # the checks would refuse this, so install the draft file directly
+    (flows / "blocks").mkdir()
+    path = flows / "blocks" / f"_draft_{name}.py"
+    path.write_text(source)
+    sha = hashlib.sha256(source.encode()).hexdigest()
+    import miniflow.agent.drafts as drafts
+
+    original = drafts.check_source
+    drafts.check_source = lambda *a: {"ok": True, "checks": [], "imports": []}  # type: ignore[assignment]
+    try:
+        with pytest.raises(SystemExit):
+            approve(flows, name, sha)
+    finally:
+        drafts.check_source = original
+    assert not (flows / "blocks" / f"{name}.py").exists()
+    assert path.exists()
+    assert name not in sys.modules
+
+
+def test_a_symlinked_blocks_folder_is_a_failed_check(flows, tmp_path_factory):
+    real = tmp_path_factory.mktemp("elsewhere")
+    try:
+        (flows / "blocks").symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks aren't supported")
+    report = check_source(flows, (name := uniq()), good(name))
+    assert "blocks folder" in failed(report)
