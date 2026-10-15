@@ -7,6 +7,10 @@ Endpoints:
 ``GET /api/runs``                  recent runs with a count of tasks per state
 ``GET /api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
 ``GET /api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /api/runs/<id>/outputs``     files the run's steps wrote (:mod:`miniflow.ui.outputs`)
+``GET /api/runs/<id>/outputs/<step>/preview``  that file as a table, document or text
+``GET /api/runs/<id>/outputs/<step>/file``     the file itself (``?download=1`` to save it)
+``POST /api/runs/<id>/outputs/<step>/open``    ``{}``: open it in the computer's default app
 ``GET /api/owner``                 ``{"token": ...}``: proves this server owns its database
                                    (:mod:`miniflow.ui.owner`)
 ``GET /api/control``               flows the dashboard can start and the active run
@@ -18,6 +22,8 @@ Endpoints:
 ``POST /api/blocks/drafts/approve``  {"name", "sha256"}: approve reviewed code
 ``POST /api/blocks/drafts/discard``  {"name", "sha256"}: discard reviewed draft
 ``POST /api/flows/upload-csv``      raw CSV bytes; save in the flow workspace
+``GET /api/flows/<name>/state``     the saved file's version, author and message, so the
+                                   editor can show saves made elsewhere (for example by Claude)
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
 scheduler writes. It works while a run is in progress (in the same process
@@ -37,6 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from dataclasses import asdict
@@ -45,7 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from miniflow.agent.chat import ChatError, ClaudeChat
 from miniflow.agent.drafts import DraftError, approve, discard, list_drafts
@@ -55,6 +62,8 @@ from miniflow.store import RunRecord, StateStore
 from miniflow.ui.author import FlowWorkspace, WorkspaceError
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
+from miniflow.ui.outputs import OutputError, content_type, find_outputs, open_file, output_path
+from miniflow.ui.outputs import preview as output_preview
 from miniflow.ui.owner import Owner, claim, release
 from miniflow.ui.schedules import ScheduleService
 
@@ -65,6 +74,7 @@ log = logging.getLogger("miniflow.ui")
 _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "outputs.js": "text/javascript; charset=utf-8",
     "charts.js": "text/javascript; charset=utf-8",
     "editor-drafts.js": "text/javascript; charset=utf-8",
     "editor-claude.js": "text/javascript; charset=utf-8",
@@ -74,6 +84,8 @@ _STATIC = {
     "editor-view.js": "text/javascript; charset=utf-8",
     "editor-versions.js": "text/javascript; charset=utf-8",
     "editor-data.js": "text/javascript; charset=utf-8",
+    "editor-sync.js": "text/javascript; charset=utf-8",
+    "editor-setup.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _POLL_SECONDS = 0.25
@@ -83,6 +95,7 @@ _MAX_BODY = 4096
 _MAX_DISCARD = 1024 * 1024  # unread request bytes drained before closing
 _MAX_FLOW_BODY = 262144
 _MAX_UPLOAD_BODY = 10 * 1024 * 1024
+_MAX_OUTPUT_FILE = 100 * 1024 * 1024
 _ACTIONS = ("run", "resume", "partial", "cancel")
 
 
@@ -224,6 +237,16 @@ class _Handler(BaseHTTPRequestHandler):
             ):
                 self._versions(parts[2], parts[4] if len(parts) > 4 else None, len(parts) == 6)
             elif (
+                len(parts) == 4
+                and parts[:2] == ["api", "flows"]
+                and parts[3] == "state"
+                and self.server.workspace is not None
+            ):
+                try:
+                    self._send_json(self.server.workspace.current(parts[2]))
+                except WorkspaceError:
+                    self._send_error(HTTPStatus.NOT_FOUND, "flow not found")
+            elif (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
                 and self.server.workspace is not None
@@ -248,6 +271,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_error(HTTPStatus.NOT_FOUND, f"no run {parts[2]!r}")
                 else:
                     self._send_json(detail)
+            elif len(parts) in (4, 6) and parts[:2] == ["api", "runs"] and parts[3] == "outputs":
+                self._outputs(parts[2], parts[4:], parse_qs(url.query))
             elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "events":
                 since = float(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 self._stream(parts[2], since)
@@ -307,6 +332,19 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if (
+                len(parts) == 6
+                and parts[:2] == ["api", "runs"]
+                and parts[3:6:2] == ["outputs", "open"]
+            ):
+                self._control_body()
+                try:
+                    path = output_path(self.server.api.store, parts[2], parts[4])
+                except OutputError as exc:
+                    raise ControlError(str(exc), HTTPStatus.NOT_FOUND) from None
+                open_file(path)
+                self._send_json({"opened": path.name})
+                return
             if parts[:2] == ["api", "agent"] and self.server.chat is not None:
                 body = self._control_body(_MAX_FLOW_BODY if parts[-1] == "restore" else 65536)
                 chat = self.server.chat
@@ -549,6 +587,42 @@ class _Handler(BaseHTTPRequestHandler):
         token = token or self.headers.get("X-MiniFlow-Token", "").strip()
         state = service.fire_webhook(flow, name, token, body)
         self._send_json({"status": state}, HTTPStatus.ACCEPTED)
+
+    def _outputs(self, run_id: str, rest: list[str], query: dict[str, list[str]]) -> None:
+        """Output files are private data: refuse pages from other sites (as chat does)."""
+        self._agent_origin()
+        store = self.server.api.store
+        if not rest:
+            self._send_json(find_outputs(store, run_id))
+            return
+        task, what = rest
+        try:
+            path = output_path(store, run_id, task)
+            if what == "preview":
+                self._send_json({"name": path.name, "path": str(path), **output_preview(path)})
+            elif what == "file":
+                size = path.stat().st_size
+                if size > _MAX_OUTPUT_FILE:
+                    raise OutputError(f"{path.name} is too large to show; open it instead")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type(path))
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                # an SVG or HTML file opened directly must not run scripts as this page
+                # (a PDF is drawn by the browser's own viewer, which a sandbox would block)
+                if path.suffix.lower() != ".pdf":
+                    self.send_header("Content-Security-Policy", "sandbox")
+                disposition = "attachment" if query.get("download") else "inline"
+                quoted = quote(path.name)
+                self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quoted}")
+                self.end_headers()
+                with path.open("rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            else:
+                self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except OutputError as exc:
+            self._send_error(HTTPStatus.NOT_FOUND, str(exc))
 
     def _versions(self, name: str, vid: str | None, diff: bool) -> None:
         workspace = self.server.workspace

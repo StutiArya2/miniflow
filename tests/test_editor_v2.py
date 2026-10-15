@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -151,6 +153,49 @@ def test_history_over_http(tmp_path: Path):
         assert request(server, "GET", "/api/flows/demo/versions/nope")[0] == 404
 
 
+def test_current_reports_the_saved_version_and_who_saved_it(ws: FlowWorkspace, tmp_path: Path):
+    assert ws.current("demo") == {"version": None, "saved_at": None, "user": "", "message": ""}
+    ws.save("demo", V1, message="tidy (agent)")
+    first = ws.current("demo")
+    assert first["version"] == ws.file_version("demo")
+    assert first["message"] == "tidy (agent)"
+    assert first["user"]
+    assert first["saved_at"]
+    ws.save("demo", V2)
+    assert ws.current("demo")["version"] not in (None, first["version"])
+    (tmp_path / ".history" / "demo" / "current.meta").write_text("not json", encoding="utf-8")
+    assert ws.current("demo")["message"] == ""  # a broken meta file still gives the version
+    with pytest.raises(WorkspaceError):
+        ws.current("../escape")
+
+
+def test_flow_state_over_http(tmp_path: Path):
+    with DashboardServer(tmp_path / "runs.db", port=0, flows=tmp_path) as server:
+        status, state = request(server, "GET", "/api/flows/demo/state")
+        assert (status, state["version"]) == (200, None)
+        request(server, "POST", "/api/flows/save", {"name": "demo", "flow": V1, "message": "hi"})
+        status, state = request(server, "GET", "/api/flows/demo/state")
+        assert status == 200
+        assert state["version"] == FlowWorkspace(tmp_path).file_version("demo")
+        assert state["message"] == "hi"
+        assert request(server, "GET", "/api/flows/_bad/state")[0] == 404
+
+
+def test_editor_marks_outside_saves():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable for browser JavaScript checks")
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [node, "--test", str(root / "tests/js/test_editor_sync.cjs")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_layout_endpoint(tmp_path: Path):
     graph = {
         "tasks": {
@@ -188,9 +233,12 @@ def test_editor_scripts_are_served(tmp_path: Path):
             "editor-view.js",
             "editor-versions.js",
             "editor-data.js",
+            "editor-sync.js",
+            "editor-setup.js",
             "editor-drafts.js",
             "chat-markdown.js",
             "editor-claude.js",
+            "outputs.js",
         ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")
@@ -269,9 +317,12 @@ def test_editor_reports_parts_that_failed_to_load(tmp_path: Path):
             "editor-view.js",
             "editor-versions.js",
             "editor-data.js",
+            "editor-sync.js",
+            "editor-setup.js",
             "editor-drafts.js",
             "chat-markdown.js",
             "editor-claude.js",
+            "outputs.js",
         ):
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
             conn.request("GET", f"/static/{name}")
