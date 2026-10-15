@@ -14,6 +14,7 @@ const Studio = {
   wire: null,                // selected connection: {from, to}
   activePanel: "test",       // one workflow-settings tab is visible at a time
   stopping: false,
+  stage: "setup",            // "setup": the step-by-step questions; "edit": the editor itself
 };
 
 const STUDIO_PANELS = ["test", "schedule", "finish", "history", "params"];
@@ -50,10 +51,26 @@ function studioMessage(message, error = false) {
   el.classList.toggle("error", error);
 }
 
+/* Switch between the setup questions and the editor, fading the new one in. */
+function studioStage(stage) {
+  Studio.stage = stage;
+  const setup = document.getElementById("studio-setup");
+  const work = document.getElementById("studio-workspace");
+  const shown = stage === "setup" ? setup : work;
+  const changed = shown.hidden;
+  setup.hidden = stage !== "setup";
+  work.hidden = stage !== "edit";
+  document.body.classList.toggle("studio-in-setup", stage === "setup");
+  if (changed) { shown.classList.remove("stage-in"); void shown.offsetWidth; shown.classList.add("stage-in"); }
+  if (stage === "setup" && changed && typeof setupStart === "function") setupStart();
+  if (stage === "edit") { studioRender(); if (changed) studioFit(); }
+}
+
 function studioShow(show) {
   Studio.visible = show;
   document.body.classList.toggle("studio-active", show);
   document.getElementById("studio").hidden = !show;
+  if (show) studioStage(Studio.name && Studio.stage === "edit" ? "edit" : "setup");
   studioNav(show ? "editor" : Studio.section === "editor" ? "examples" : Studio.section);
   try { history.replaceState(null, "", show ? "#editor" : S.runId ? `#run=${S.runId}` : location.pathname); }
   catch { /* sandboxed */ }
@@ -122,6 +139,8 @@ async function studioOpen(name) {
     Studio.dirty = false;
     studioHistoryReset();
     document.getElementById("studio-name").value = name;
+    document.getElementById("studio-flow").value = name;
+    Studio.stage = "edit";
     studioShow(true);
     studioFit();
     studioLoadVersions();
@@ -129,10 +148,11 @@ async function studioOpen(name) {
   } catch (error) { studioMessage(String(error), true); }
 }
 
-function studioNew() {
+function studioNew(name = "new_flow") {
   if (Studio.dirty && !window.confirm("Discard unsaved workflow changes?")) return;
   Studio.flow = { description: "", params: {}, steps: {} };
-  Studio.name = "new_flow";
+  Studio.name = name;
+  Studio.stage = "edit";
   Studio.selected = null;
   Studio.testIndex = 0;
   Studio.problems = [];
@@ -143,13 +163,12 @@ function studioNew() {
   studioMessage("Add a block from the palette to begin.");
 }
 
-async function studioUseTemplate() {
+async function studioUseTemplate(template = document.getElementById("studio-template").value, chosen = "") {
   if (Studio.dirty && !window.confirm("Discard unsaved workflow changes?")) return;
-  const template = document.getElementById("studio-template").value;
   const existing = [...document.getElementById("studio-flow").options].map((option) => option.value);
-  let name = template;
+  let name = chosen || template;
   let number = 2;
-  while (existing.includes(name)) name = `${template}_${number++}`;
+  while (existing.includes(name)) name = `${chosen || template}_${number++}`;
   try {
     Studio.flow = await studioApi("/api/flows/template", { template, name });
     Studio.name = name; Studio.selected = null; Studio.problems = []; Studio.dirty = false;
@@ -158,6 +177,7 @@ async function studioUseTemplate() {
     await studioList(); await loadControl();
     const subflows = await studioApi("/api/subflows");
     Studio.subflows = new Map(subflows.map((flow) => [flow.name, flow]));
+    Studio.stage = "edit";
     studioShow(true);
     studioMessage(`Starter ${name} is ready. Change a parameter or add a block, then run it.`);
   } catch (error) { studioMessage(String(error), true); }
@@ -200,7 +220,7 @@ function studioAdd(blockName, at, after) {
 }
 
 /* Palette groups in a fixed order; anything else (plugins) comes last. */
-const STUDIO_GROUPS = ["Read & write", "Transform", "Text & dates", "Excel", "Messages, AI & cloud", "Email & utilities", "Databases", "System"];
+const STUDIO_GROUPS = ["Read & write", "Transform", "Text & dates", "Excel & Word", "Messages, AI & cloud", "Email & utilities", "Databases", "System"];
 
 function studioBlockButton(b) {
   const button = document.createElement("button");
@@ -300,6 +320,7 @@ function studioWires(positions) {
       const explicit = (step.after || []).includes(dep);
       const chosen = Studio.wire?.from === dep && Studio.wire?.to === name;
       line.setAttribute("class", `studio-wire${explicit ? "" : " inferred"}${chosen ? " chosen" : ""}`);
+      line.dataset.from = dep; line.dataset.to = name;
       // a wide invisible copy of the path makes the thin wire easy to click
       const hit = line.cloneNode();
       hit.setAttribute("class", "studio-wire-hit");
@@ -421,6 +442,7 @@ function studioRender() {
   }));
   studioWires(positions);
   studioDecorate(positions);
+  studioMarkChanges(positions);
   studioInspector();
   studioRenderProblems();
   studioRenderTests();
@@ -1120,7 +1142,7 @@ async function studioValidate(save = false) {
     studioMessage(result.valid ? (save ? `Saved ${Studio.name}.json` : "Workflow is valid.")
       : Studio.problems.join("\n"), !result.valid);
     if (save && result.valid) {
-      Studio.dirty = false; await studioList(); await loadControl();
+      Studio.dirty = false; await studioSyncSaved(); await studioList(); await loadControl();
       if (message) message.value = "";
       studioLoadVersions();
       const subflows = await studioApi("/api/subflows");
@@ -1187,7 +1209,24 @@ async function studioPartial() {
 
 /* Functions the editor needs from its other script files (editor-*.js). */
 // One line: tests/test_editor_v2.py reads this list.
-const STUDIO_PARTS = ["claudeMarkdown", "studioClaudeInit", "studioDraftsInit", "studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate", "studioRenameStep", "studioFocusStep"];
+const STUDIO_PARTS = ["claudeMarkdown", "studioClaudeInit", "studioDraftsInit", "studioCommit", "studioDraggable", "studioViewInit", "studioLoadVersions", "studioLoadRuns", "studioDecorate", "studioSyncInit", "studioMarkChanges", "studioSetupInit", "outputsFor", "studioRenameStep", "studioFocusStep"];
+
+/* The editor's top bar: back to the setup questions, flow settings and the More menu. */
+function studioWorkspaceInit() {
+  document.getElementById("studio-back").onclick = () => studioStage("setup");
+  const dialog = document.getElementById("studio-flow-settings");
+  document.getElementById("studio-settings-open").onclick = () => {
+    studioSelectPanel(Studio.activePanel);
+    dialog.showModal();
+  };
+  document.getElementById("studio-flow-settings-close").onclick = () => dialog.close();
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+  const more = document.getElementById("studio-more");
+  // a menu choice closes the menu; clicking anywhere else closes it too
+  more.querySelectorAll(".studio-more-menu button").forEach((button) => button.addEventListener("click", () => { more.open = false; }));
+  document.addEventListener("click", (event) => { if (more.open && !more.contains(event.target)) more.open = false; });
+  more.addEventListener("keydown", (event) => { if (event.key === "Escape" && more.open) { more.open = false; more.querySelector("summary").focus(); } });
+}
 
 /* If an older dashboard process can't serve the newer script files, say so instead of
  * showing an empty palette. */
@@ -1260,6 +1299,9 @@ async function studioInit() {
     studioViewInit();
     studioDraftsInit();
     studioClaudeInit();
+    studioSyncInit();
+    studioSetupInit();
+    studioWorkspaceInit();
     studioHistoryReset();
     if (location.hash === "#editor") studioShow(true);
   } catch { /* read-only dashboard has no editor */ }

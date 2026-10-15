@@ -43,6 +43,8 @@ async function studioLoadRuns(choose) {
   try {
     const detail = await studioApi(`/api/runs/${encodeURIComponent(id)}`);
     Studio.runData = { run: detail.run, graph: detail.graph, tasks: new Map(detail.tasks.map((t) => [t.task, t])) };
+    const outputs = await outputsFor(id, `${detail.tasks.length}:${detail.run.finished_at || ""}`).catch(() => []);
+    Studio.runData.outputs = new Map(outputs.map((o) => [o.task, o]));
   } catch { Studio.runData = null; }
   studioRender();
 }
@@ -86,6 +88,15 @@ function studioDecorate(positions) {
     badge.className = `studio-run-badge st-${task.state}`;
     badge.textContent = [task.state.toLowerCase(), studioItems(task)].filter(Boolean).join(" · ");
     node.append(badge);
+    const file = data.outputs?.get(name);
+    if (file) {
+      const open = outputsButton(data.run.run_id, file, file.name);
+      open.className = "studio-output-chip";
+      open.title = `Open ${file.name}, the file this step wrote`;
+      open.addEventListener("pointerdown", (event) => event.stopPropagation());
+      open.addEventListener("click", (event) => event.stopPropagation());
+      node.append(open);
+    }
     if (stale.has(name)) {
       node.classList.add("stale");
       node.title = `${node.title ? `${node.title}\n` : ""}Changed since this run; its result may differ now.`;
@@ -123,6 +134,8 @@ function studioRunSection(name) {
   if (studioStale().has(name)) {
     box.append(Object.assign(document.createElement("p"), { className: "hint", textContent: "This step (or one before it) changed since this run." }));
   }
+  const file = Studio.runData.outputs?.get(name);
+  if (file) box.append(outputsButton(Studio.runData.run.run_id, file, `Open ${file.name}`));
   if (task.error) {
     box.append(Object.assign(document.createElement("pre"), { className: "error", textContent: task.error.trim().split("\n").slice(-6).join("\n") }));
   } else if (task.sample !== null && task.sample !== undefined) {

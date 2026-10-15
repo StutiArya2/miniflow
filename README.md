@@ -87,7 +87,7 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
   - alerts, AI and cloud: `webhook`, `slack_message`, `teams_message`, `llm_prompt` (Anthropic or
     any OpenAI-compatible API), `s3_get`, `s3_put` (AWS or MinIO-style servers). Webhook URLs, API
     keys and cloud credentials must come from `{{ env.NAME }}`.
-  - Excel: `read_xlsx`, `write_xlsx` (plain data sheets, no outside library)
+  - Excel and Word: `read_xlsx`, `write_xlsx`, `write_docx` (no outside library)
   - dates and text: `date_format`, `date_add`, `date_diff` (a single value, or a field of every
     row) and `text_template` (turn rows into an email or chat message)
   - databases: `postgres`, `mysql`. These need a driver the core doesn't install: run
@@ -344,3 +344,7 @@ uv run mkdocs serve                  # docs site
 
 Optional extras: `miniflow[rich]` (live progress table), `miniflow[viz]`
 (render the DAG to PNG/SVG; also needs the Graphviz `dot` program on PATH).
+
+To put this checkout's code into the macOS app (it bundles its own copy of `miniflow/`),
+run `scripts/update-app.sh` (add `--check` to run the tests first). It bumps the build
+number, re-signs the app and keeps the previous version in a temporary folder.

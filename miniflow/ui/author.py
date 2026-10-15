@@ -155,7 +155,7 @@ _GROUPS = {
     "data": "Read & write",
     "transform": "Transform",
     "text": "Text & dates",
-    "office": "Excel",
+    "office": "Excel & Word",
     "web": "Messages, AI & cloud",
     "notify": "Email & utilities",
     "databases": "Databases",
@@ -424,6 +424,27 @@ class FlowWorkspace:
     def restore(self, name: str, vid: str) -> dict[str, Any]:
         """Make version ``vid`` current again; the replaced version is kept in history."""
         return self.save(name, self.version(name, vid), message=f"restored {vid}")
+
+    def current(self, name: str) -> dict[str, Any]:
+        """The saved file's version plus who saved it, when and with what message.
+
+        The editor polls this to notice saves made elsewhere (an agent, another tab).
+        ``version`` is None if there is no such file; the other fields are empty when
+        the file was written by hand.
+        """
+        version = self.file_version(name)
+        meta: dict[str, Any] = {}
+        if version is not None:
+            with contextlib.suppress(OSError, ValueError):
+                loaded = json.loads((self._history(name) / "current.meta").read_text("utf-8"))
+                meta = loaded if isinstance(loaded, dict) else {}
+        message = meta.get("message", "")
+        return {
+            "version": version,
+            "saved_at": meta.get("saved_at"),
+            "user": meta.get("user", ""),
+            "message": message if isinstance(message, str) else "",
+        }
 
     def file_version(self, name: str) -> str | None:
         """Short hash of the flow file's bytes, or None if there is no such file."""

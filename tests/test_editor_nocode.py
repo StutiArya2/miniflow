@@ -13,7 +13,7 @@ from miniflow.ui.author import FlowWorkspace, block_catalog, block_group
 from tests.test_author import request
 
 GROUPS = {
-    "Read & write", "Transform", "Text & dates", "Excel", "Messages, AI & cloud",
+    "Read & write", "Transform", "Text & dates", "Excel & Word", "Messages, AI & cloud",
     "Email & utilities", "Databases", "System",
 }  # fmt: skip
 # Other tests register plugin blocks in the same process; those are grouped as "Plugins".

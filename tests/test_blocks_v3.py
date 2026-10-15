@@ -11,11 +11,13 @@ import zipfile
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
 from miniflow.blocks import get_block
 from miniflow.blocks.sigv4 import sign_request
+from miniflow.ui.outputs import preview
 
 
 def call(name: str, **settings):
@@ -383,6 +385,46 @@ def test_write_xlsx_round_trips_and_escapes(tmp_path: Path):
     assert list(call("read_xlsx", path=str(path))[0]) == ["n", "name"]
 
 
+def test_write_docx_is_a_well_formed_word_file(tmp_path: Path):
+    path = tmp_path / "out" / "memo.docx"
+    text = (
+        "Intro line one\nstill intro.\n\n# Results\n"
+        "- **East** led\n- *West* <lagged> & more\n\nDone."
+    )
+    rows = [{"region": "North", "units": 120}, {"region": "a*b", "units": None}]
+    result = call("write_docx", path=str(path), title="Weekly memo", text=text, rows=rows)
+    assert result == {"path": str(path), "paragraphs": 6, "rows": 2}
+    with zipfile.ZipFile(path) as z:
+        assert z.testzip() is None
+        names = set(z.namelist())
+        assert {"[Content_Types].xml", "word/document.xml", "word/styles.xml"} <= names
+        for name in names:  # every part is well-formed XML
+            ET.fromstring(z.read(name))
+
+    blocks = preview(path)["blocks"]  # what the dashboard's viewer shows
+    text_of = lambda b: "".join(r["text"] for r in b.get("runs", []))  # noqa: E731
+    assert [(b["type"], text_of(b)) for b in blocks[:3]] == [
+        ("heading", "Weekly memo"),
+        ("paragraph", "Intro line one still intro."),
+        ("heading", "Results"),
+    ]
+    east, west = blocks[3], blocks[4]
+    assert east["list"]
+    assert [(r["text"], r["bold"]) for r in east["runs"]] == [("East", True), (" led", False)]
+    assert west["runs"][0] == {"text": "West", "bold": False, "italic": True, "underline": False}
+    assert text_of(west).endswith("<lagged> & more")  # escaped on write, back intact
+    assert blocks[-1] == {
+        "type": "table",
+        "rows": [["region", "units"], ["North", "120"], ["a*b", ""]],
+    }
+
+
+def test_write_docx_with_nothing_still_opens(tmp_path: Path):
+    path = tmp_path / "empty.docx"
+    assert call("write_docx", path=str(path))["paragraphs"] == 1
+    assert preview(path)["blocks"] == [{"type": "paragraph", "list": False, "runs": []}]
+
+
 def test_xlsx_errors_are_plain(tmp_path: Path):
     with pytest.raises(FileNotFoundError, match="no such file"):
         call("read_xlsx", path=str(tmp_path / "nope.xlsx"))
@@ -647,7 +689,15 @@ def test_editor_catalog_lists_the_new_blocks_with_secret_fields():
     catalog = {b["name"]: b for b in block_catalog()}
     expected = {
         *("slack_message", "teams_message", "webhook", "llm_prompt", "s3_get", "s3_put"),
-        *("read_xlsx", "write_xlsx", "date_format", "date_add", "date_diff", "text_template"),
+        *(
+            "read_xlsx",
+            "write_xlsx",
+            "write_docx",
+            "date_format",
+            "date_add",
+            "date_diff",
+            "text_template",
+        ),
         *("postgres", "mysql"),
     }
     assert expected <= catalog.keys()
