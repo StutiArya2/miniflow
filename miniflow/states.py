@@ -20,11 +20,13 @@ class State(StrEnum):
 TERMINAL = frozenset({State.SUCCESS, State.FAILED, State.SKIPPED})
 
 # Allowed transitions. The scheduler asserts against this table.
+# READY -> SKIPPED and RETRYING -> SKIPPED happen only with ``Scheduler(prune=True)``:
+# a waiting task whose results can no longer reach any sink is pruned (miniflow.priority).
 TRANSITIONS: dict[State, frozenset[State]] = {
     State.PENDING: frozenset({State.READY, State.SKIPPED}),
-    State.READY: frozenset({State.RUNNING}),
+    State.READY: frozenset({State.RUNNING, State.SKIPPED}),
     State.RUNNING: frozenset({State.SUCCESS, State.FAILED, State.RETRYING}),
-    State.RETRYING: frozenset({State.READY}),
+    State.RETRYING: frozenset({State.READY, State.SKIPPED}),
     State.SUCCESS: frozenset(),
     State.FAILED: frozenset(),
     State.SKIPPED: frozenset(),

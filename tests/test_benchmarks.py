@@ -83,3 +83,21 @@ def test_run_writes_csvs_and_summary(tmp_path):
     text = (out / "results.md").read_text(encoding="utf-8")
     assert "## 5. Correctness" in text
     assert "0 violations" in text
+
+
+def test_failure_aware_experiment_is_paired_and_correct():
+    cfg = X.Config.quick()
+    checker = X.Correctness()
+    rows = X.failure_aware(cfg, checker)
+    assert {r["policy"] for r in rows} == set(X.FA_POLICIES)
+    for workload in {r["workload"] for r in rows}:
+        same = [r for r in rows if r["workload"] == workload]
+        # Faults are deterministic per seed, so policies can't change which runs fail.
+        assert len({r["run_success_rate"] for r in same}) == 1
+    assert checker.violations == []
+
+
+def test_gated_and_etl_shapes_are_valid():
+    for edges in (X.gated(2, 3), X.etl(3, 4, 2, seed=1)):
+        DAG.from_tasks(W.build(edges, W.noop))
+    assert X.gated(2, 3)["report0"] == ["gate0", "heavy0_0", "heavy0_1", "heavy0_2"]

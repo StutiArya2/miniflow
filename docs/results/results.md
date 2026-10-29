@@ -73,6 +73,48 @@ Each attempt of every task fails with probability p. A run succeeds only if all 
 
 ![Attempts](e4_fault_attempts.png)
 
+## 6. Failure-aware priority and pruning
+
+Run separately with `python -m benchmarks.run --only e6` on 2026-10-29 · Python 3.13 · Linux, 2 logical CPUs · 4 io workers · 40 fault seeds per policy, 8 training runs · 480 runs checked for correctness, 0 violations. Tasks sleep (io), so the core count doesn't limit them.
+
+Cheap, flaky steps (35 % of attempts fail, one retry) sit among reliable, more expensive ones. *failure-aware* starts a ready step early when its learned failure risk times the work its failure would make useless exceeds the delay it causes; *prune* skips waiting steps whose results can no longer reach any sink. History comes from separate training runs; faults are deterministic per seed, so every policy sees the same failed runs. *Useless work*: worker time on steps whose results nothing in the run could use. Ratios are against the default.
+
+| workload | policy | runs succeeded | worker s / failed run | × | useless worker s | first failure (s) | failed run wall (s) | successful run wall (s) | × |
+|---|---|---|---|---|---|---|---|---|---|
+| gated joins (40 tasks) | critical path (default) | 0.6 | 1.45 | 1 | 0.279 | 0.319 | 0.377 | 0.395 | 1 |
+| gated joins (40 tasks) | prune only | 0.6 | 1.45 | 1 | 0.279 | 0.32 | 0.377 | 0.395 | 0.998 |
+| gated joins (40 tasks) | failure-aware only | 0.6 | 1.45 | 1 | 0.279 | 0.0241 | 0.376 | 0.403 | 1.02 |
+| gated joins (40 tasks) | failure-aware + prune | 0.6 | 1.18 | 0.814 | 0.00914 | 0.024 | 0.307 | 0.403 | 1.02 |
+| etl (32 tasks) | critical path (default) | 0.45 | 1.03 | 1 | 0.13 | 0.217 | 0.278 | 0.303 | 1 |
+| etl (32 tasks) | prune only | 0.45 | 1.02 | 0.996 | 0.129 | 0.216 | 0.276 | 0.303 | 0.999 |
+| etl (32 tasks) | failure-aware only | 0.45 | 1.02 | 0.997 | 0.13 | 0.207 | 0.276 | 0.289 | 0.955 |
+| etl (32 tasks) | failure-aware + prune | 0.45 | 1.02 | 0.994 | 0.128 | 0.206 | 0.275 | 0.29 | 0.956 |
+| layered (48 tasks) | critical path (default) | 0.525 | 1.67 | 1 | 0.0614 | 0.341 | 0.441 | 0.474 | 1 |
+| layered (48 tasks) | prune only | 0.525 | 1.64 | 0.987 | 0.0399 | 0.337 | 0.435 | 0.475 | 1 |
+| layered (48 tasks) | failure-aware only | 0.525 | 1.67 | 1 | 0.0614 | 0.337 | 0.435 | 0.474 | 0.999 |
+| layered (48 tasks) | failure-aware + prune | 0.525 | 1.64 | 0.985 | 0.0381 | 0.337 | 0.428 | 0.475 | 1 |
+
+![Failure-aware](e6_failure_aware.png)
+
+What this shows:
+
+- **The two parts only pay off together.** On gated joins (a cheap precondition beside
+  expensive independent steps, all needed by one report), *prune only* saves nothing
+  because by the time the precondition fails the doomed work has already run, and
+  *failure-aware only* finds the failure 13× sooner (0.024 s vs 0.32 s) but still runs
+  the doomed work. Together they cut worker time per failed run by 19 %, useless work by
+  97 % and failed-run wall time by 19 %.
+- **Cost on successful runs is small:** +2 % wall time on gated joins, where cheap
+  precondition steps are moved ahead of expensive ones.
+- **Gains depend on the graph.** In the ETL pipeline the flaky checks can only start
+  after their transforms, and each check feeds several reports, so there is little to
+  save (under 1 %). Its successful runs got 4–5 % faster, which comes from ranking with
+  learned durations rather than from failure awareness. In random layered graphs the
+  saving is 1–2 %.
+- Pruning moves work rather than deleting it when a run is later resumed: a pruned
+  step runs during the resume. It is saved for good when the run is abandoned or fixed
+  upstream of that step.
+
 ## 5. Correctness
 
 Every MiniFlow run above was checked against the state store: **440 runs, 63083 attempts, 0 violations.** No attempt started before all of its upstream tasks had finished, every SKIPPED task had a FAILED ancestor, and every FAILED task used exactly its retry budget.

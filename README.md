@@ -226,6 +226,21 @@ miniflow run examples/ocean_watch.py                    # about 6 s (10 s the fi
 miniflow run examples/ocean_watch.py --cpu-workers 1    # about 24 s: why cpu tasks use processes
 ```
 
+### Failure-aware priority (opt-in)
+
+```bash
+miniflow run flow.py --priority failure-aware --prune
+```
+
+With `--priority failure-aware`, MiniFlow reads earlier runs of the same flow from
+`miniflow.db`, estimates how often each step fails and how long it takes, and starts a
+ready step early when its failure risk times the work its failure would make useless
+outweighs the delay it causes. `--prune` then skips waiting steps whose results can no
+longer reach any final step once something has failed for good (they run again on
+`resume`). Steps with no recorded failures keep the normal critical-path order. Details
+in `miniflow/priority.py`; measurements in section 6 of
+[`docs/results/results.md`](docs/results/results.md).
+
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`
 injects failures (`MINIFLOW_FAIL_RATE`, default 0.4) and a hanging task with a timeout.

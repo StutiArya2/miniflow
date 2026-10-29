@@ -361,6 +361,8 @@ def _execute_with(
             store=store,
             policy=RetryPolicy(base=args.retry_base, cap=args.retry_cap),
             flow=flow,
+            priority="failure_aware" if args.priority == "failure-aware" else "critical_path",
+            prune=args.prune,
             listeners=[reporter] if reporter else [],
             signatures={name: step_signature(step) for name, step in dag.tasks.items()}
             if spec is not None
@@ -610,6 +612,17 @@ def build_parser() -> argparse.ArgumentParser:
             "--retry-base", type=float, default=0.1, help="first backoff delay in seconds"
         )
         p.add_argument("--retry-cap", type=float, default=30.0, help="maximum backoff delay")
+        p.add_argument(
+            "--priority",
+            choices=["critical-path", "failure-aware"],
+            default="critical-path",
+            help="ready-queue order; failure-aware learns failure rates from earlier runs",
+        )
+        p.add_argument(
+            "--prune",
+            action="store_true",
+            help="after a task fails for good, skip waiting tasks only its skipped steps needed",
+        )
         p.add_argument(
             "--plain", action="store_true", help="line-by-line output instead of a live table"
         )
