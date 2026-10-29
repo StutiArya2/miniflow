@@ -115,6 +115,32 @@ What this shows:
   step runs during the resume. It is saved for good when the run is abandoned or fixed
   upstream of that step.
 
+## 7. Failure and resume: reuse-aware salvage
+
+Run separately with `python -m benchmarks.run --only e7` on 2026-10-29 · same machine as section 6 · 4 io workers · 40 fault seeds per policy (16 failed runs each), 8 training runs per regime · 288 runs checked, 0 violations.
+
+The gated-join workload, counting a failed run plus what follows it. *Resumed*: failures are transient and every failed run is resumed after the fix. *Abandoned*: failed runs are never resumed. Each regime's policies learn from training runs of that regime. *salvage* keeps doomed steps whose results were usually reused after a failure, running them after the live work, and prunes the rest.
+
+| regime | policy | doomed steps run | failed run worker s | failed run wall (s) | resume wall (s) | total worker s | × | total wall (s) |
+|---|---|---|---|---|---|---|---|---|
+| resumed | critical path (default) | 6.75 | 1.44 | 0.377 | 0.0544 | 1.5 | 1 | 0.431 |
+| resumed | failure-aware + prune | 4.06 | 1.34 | 0.351 | 0.0843 | 1.5 | 1 | 0.436 |
+| resumed | failure-aware + prune + salvage | 6.75 | 1.45 | 0.38 | 0.0547 | 1.5 | 1 | 0.435 |
+| abandoned | critical path (default) | 6.75 | 1.45 | 0.377 | 0 | 1.45 | 1 | 0.377 |
+| abandoned | failure-aware + prune | 4.06 | 1.34 | 0.351 | 0 | 1.34 | 0.931 | 0.351 |
+| abandoned | failure-aware + prune + salvage | 4.06 | 1.35 | 0.354 | 0 | 1.35 | 0.932 | 0.354 |
+
+What this shows:
+
+- **No fixed policy wins both regimes.** Pruning saves 7 % worker time when failures are
+  abandoned, but when they are resumed it only moves the doomed work into the resume:
+  the resume takes 0.084 s instead of 0.054 s, a 55 % slower recovery after the fix.
+- **Salvage matches the better fixed policy in each regime, without configuration.**
+  With a resume history it keeps the doomed work (resume 0.055 s, like the default);
+  with an abandoned history it prunes (−7 %, like pruning).
+- **No net saving over a full failure + resume cycle:** the work is done once either
+  way. The value is choosing, per step, whether to do it now or not at all.
+
 ## 5. Correctness
 
 Every MiniFlow run above was checked against the state store: **440 runs, 63083 attempts, 0 violations.** No attempt started before all of its upstream tasks had finished, every SKIPPED task had a FAILED ancestor, and every FAILED task used exactly its retry budget.

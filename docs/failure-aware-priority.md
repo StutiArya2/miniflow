@@ -1,8 +1,8 @@
 # Failure-aware priority and pruning: technical note
 
-Status: opt-in prototype (`Scheduler(priority="failure_aware", prune=True)`, CLI
-`--priority failure-aware --prune`). Code: `miniflow/priority.py`. Tests:
-`tests/test_priority.py`. Measurements: section 6 of `docs/results/results.md`.
+Status: opt-in prototype (`Scheduler(priority="failure_aware", prune=True, salvage=True)`,
+CLI `--priority failure-aware --prune --salvage`). Code: `miniflow/priority.py`. Tests:
+`tests/test_priority.py`. Measurements: sections 6 and 7 of `docs/results/results.md`.
 
 ## Problem
 
@@ -32,9 +32,23 @@ puts a cheap, often-failing precondition last, after all the expensive work it g
    backoff) in the doomed set are marked SKIPPED with a `pruned:` reason. Sinks are
    never pruned, running tasks are not interrupted, and pruned tasks rerun on resume.
 
-The measured effect (section 6) comes from 3 and 4 together. Promotion alone moves
+5. **Reuse-aware salvage (adaptive pruning).** Pruning only postpones work when the
+   failed run is later resumed: the pruned steps then run inside the resume, on its
+   critical path. From the run history, pair each failed run with the next run of the
+   same flow and count, per task, how often a result computed in the failed run was
+   taken from the cache by the next one. This gives a reuse probability `r` (Beta
+   prior, mean 30 %). On a permanent failure, a doomed task with `r ≥ 0.5` (expected
+   reuse beats expected waste, `r · c > (1 − r) · c`) is kept, at the back of the ready
+   queue behind all live work; the rest are pruned.
+
+The measured effect of 1–4 (section 6) comes from 3 and 4 together. Promotion alone moves
 failure detection earlier without saving work; pruning alone finds little left to
 prune because the doomed work already ran.
+
+Section 7 measures 5. When failures are resumed, pruning slows the resume by 55 %;
+salvage keeps the resume as fast as the default. When failures are abandoned, salvage
+saves the same 7 % as pruning. No fixed setting does both. Over a full failure + resume
+cycle the total work is the same, because the work is done once either way.
 
 ## Limitations
 
@@ -49,6 +63,8 @@ prune because the doomed work already ran.
   of empty tasks where a quarter of the tasks have failure history, scheduler overhead
   rose from about 145 to 610 µs per task. That is negligible for real work but worth
   optimising (e.g. caching exposure between state changes) for very large graphs.
+- Salvage needs history pairing failed runs with what followed. The next run of the
+  flow is treated as the follow-up, which can be wrong when unrelated runs interleave.
 - Adds two state transitions (`READY → SKIPPED`, `RETRYING → SKIPPED`), used only with
   `prune=True`.
 

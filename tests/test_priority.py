@@ -403,8 +403,159 @@ def test_cli_flags(tmp_path: Path):
     db = tmp_path / "m.db"
     args = ["run", str(flow), "--db", str(db), "--quiet", "--io-workers", "1"]
     assert main([*args, "--priority", "failure-aware", "--prune"]) == 1
+    assert main([*args, "--priority", "failure-aware", "--salvage"]) == 1
     with StateStore(db) as store:
         run_id = store.latest_run()
         assert run_id is not None
         states = store.get_states(run_id)
     assert states["report"] is State.SKIPPED
+
+
+# ------------------------------------------------------------------- salvage
+from miniflow.priority import ReuseHistory, ReuseModel, learn_reuse  # noqa: E402
+
+SALVAGE_HISTORY = {
+    "a": TaskHistory(attempts=10, successes=10, success_seconds=0.1),
+    "gate": TaskHistory(attempts=10, failures=8, successes=2, success_seconds=0.02),
+    "h1": TaskHistory(attempts=10, successes=10, success_seconds=0.5),
+    "long": TaskHistory(attempts=10, successes=10, success_seconds=5.0),
+    "rep1": TaskHistory(attempts=2, successes=2, success_seconds=0.02),
+    "rep2": TaskHistory(attempts=2, successes=2, success_seconds=0.02),
+}
+REUSED = {"h1": ReuseHistory(chances=5, reused=5)}
+ABANDONED = {"h1": ReuseHistory(chances=5, reused=0)}
+
+
+def gated_flow(*, gate_fails: bool = True, with_long: bool = True) -> list[Any]:
+    a = task(mark, name="a", kind="io", kwargs={"name": "a"})
+    gate = task(
+        boom if gate_fails else mark, name="gate", kind="io", after=[a], kwargs={"name": "gate"}
+    )
+    h1 = task(mark, name="h1", kind="io", after=[a], kwargs={"name": "h1", "seconds": 0.05})
+    rep1 = task(mark, name="rep1", kind="io", after=[gate, h1], kwargs={"name": "rep1"})
+    tasks = [a, gate, h1, rep1]
+    if with_long:
+        long = task(
+            mark, name="long", kind="io", after=[a], kwargs={"name": "long", "seconds": 0.5}
+        )
+        tasks += [long, task(mark, name="rep2", kind="io", after=[long], kwargs={"name": "rep2"})]
+    return tasks
+
+
+def salvage_run(tasks: list[Any], workers: int, store: StateStore, **options: Any) -> Any:
+    with ExecutorRouter(io_workers=workers) as router:
+        return Scheduler(
+            DAG.from_tasks(tasks),
+            router=router,
+            store=store,
+            policy=FAST,
+            priority="failure_aware",
+            prune=True,
+            history=SALVAGE_HISTORY,
+            **options,
+        ).run()
+
+
+def test_reuse_model_prior_and_threshold():
+    model = ReuseModel(dict(REUSED))
+    assert model.p_reuse("h1") == pytest.approx(5.6 / 7)
+    assert model.worth_salvaging("h1")
+    assert model.p_reuse("unknown") == pytest.approx(0.3)
+    assert not model.worth_salvaging("unknown")
+    with pytest.raises(ValueError, match="prior"):
+        ReuseModel(prior_reused=3, prior_chances=2)
+
+
+def test_learn_reuse_pairs_failed_runs_with_the_next_run():
+    with ExecutorRouter(io_workers=1) as router, StateStore() as store:
+        first = Scheduler(
+            DAG.from_tasks(join_flow()), router=router, store=store, policy=FAST, flow="j"
+        ).run()
+        Scheduler(
+            DAG.from_tasks(join_flow(risky_fails=False)),
+            router=router,
+            store=store,
+            policy=FAST,
+            flow="j",
+        ).run(resume_from=first.run_id)  # resumed: 'a' and 'big' come from the cache
+        Scheduler(
+            DAG.from_tasks(join_flow()), router=router, store=store, policy=FAST, flow="j"
+        ).run()  # fails; then a fresh run that doesn't reuse anything
+        Scheduler(
+            DAG.from_tasks(join_flow(risky_fails=False)),
+            router=router,
+            store=store,
+            policy=FAST,
+            flow="j",
+        ).run()
+        stats = learn_reuse(store, "j")
+    assert (stats["big"].chances, stats["big"].reused) == (2, 1)
+    assert "risky" not in stats  # it never succeeded in a failed run
+    assert learn_reuse(store, "j", last_runs=1) == {}
+
+
+def test_salvage_runs_likely_reused_doomed_work_in_idle_time():
+    with StateStore() as store:
+        result = salvage_run(gated_flow(), 2, store, salvage=True, reuse=REUSED)
+        assert calls.index("gate") < calls.index("h1")
+        assert result.states["h1"] is State.SUCCESS  # salvaged, not pruned
+        assert result.states["rep1"] is State.SKIPPED
+        assert result.states["rep2"] is State.SUCCESS
+        calls.clear()
+        with ExecutorRouter(io_workers=2) as router:
+            resumed = Scheduler(
+                DAG.from_tasks(gated_flow(gate_fails=False)),
+                router=router,
+                store=store,
+                policy=FAST,
+            ).run(resume_from=result.run_id)
+    assert resumed.ok
+    assert "h1" in resumed.from_cache
+    assert "h1" not in calls
+
+
+def test_salvage_prunes_when_failures_are_usually_abandoned():
+    with StateStore() as store:
+        result = salvage_run(gated_flow(), 2, store, salvage=True, reuse=ABANDONED)
+    assert "h1" not in calls
+    assert result.states["h1"] is State.SKIPPED
+    assert result.errors["h1"].startswith("pruned:")
+
+
+def test_salvaged_work_runs_after_live_work():
+    with StateStore() as store:
+        result = salvage_run(gated_flow(), 1, store, salvage=True, reuse=REUSED)
+    assert calls.index("rep2") < calls.index("h1")  # live work first, even on one worker
+    assert result.states["h1"] is State.SUCCESS
+
+
+def test_salvage_requires_prune():
+    with pytest.raises(ValueError, match="prune"):
+        Scheduler(DAG.from_tasks(gated_flow()), salvage=True)
+
+
+def test_salvage_learns_reuse_from_the_store():
+    with ExecutorRouter(io_workers=2) as router, StateStore() as store:
+        for _ in range(2):  # fail, then resume: 'h1' is reused each time
+            failed = Scheduler(
+                DAG.from_tasks(gated_flow()), router=router, store=store, policy=FAST, flow="g"
+            ).run()
+            Scheduler(
+                DAG.from_tasks(gated_flow(gate_fails=False)),
+                router=router,
+                store=store,
+                policy=FAST,
+                flow="g",
+            ).run(resume_from=failed.run_id)
+        calls.clear()
+        result = Scheduler(
+            DAG.from_tasks(gated_flow()),
+            router=router,
+            store=store,
+            policy=FAST,
+            flow="g",
+            priority="failure_aware",
+            prune=True,
+            salvage=True,
+        ).run()
+    assert result.states["h1"] is State.SUCCESS

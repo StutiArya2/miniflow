@@ -28,7 +28,9 @@ starts first the ready tasks that are likely to fail and whose failure would mak
 other waiting work useless, using failure rates from earlier runs of the same flow;
 other tasks keep the critical-path order.
 ``prune=True`` marks SKIPPED the waiting tasks whose results can no longer reach any
-sink once a task has failed for good. Both default to off.
+sink once a task has failed for good. ``salvage=True`` (with ``prune``) keeps the doomed
+tasks whose results are usually reused after a failure, learned from earlier runs, and
+runs them after the live work. All default to off.
 
 Timeouts: a task that exceeds ``timeout`` is failed with
 :class:`miniflow.retry.TaskTimeoutError` and its future is cancelled.
@@ -56,7 +58,16 @@ from typing import Any, Literal
 from miniflow.executors import ExecutorRouter, Outcome, TaskError
 from miniflow.graph import DAG
 from miniflow.preview import summarize
-from miniflow.priority import FailureAwareRank, FailureModel, TaskHistory, doomed, learn_history
+from miniflow.priority import (
+    FailureAwareRank,
+    FailureModel,
+    ReuseHistory,
+    ReuseModel,
+    TaskHistory,
+    doomed,
+    learn_history,
+    learn_reuse,
+)
 from miniflow.retry import RetryPolicy, TaskTimeoutError
 from miniflow.states import TERMINAL, TRANSITIONS, State
 from miniflow.store import StateStore
@@ -156,6 +167,10 @@ class Scheduler:
         a task fails for good.
     :param history: attempt statistics per task for ``failure_aware``; by default they
         are read from the newest ``history_runs`` runs of ``flow`` in ``store``.
+    :param salvage: with ``prune``, keep doomed tasks that are likely to be reused after
+        the failure and run them after the live work (see :mod:`miniflow.priority`).
+    :param reuse: reuse statistics per task for ``salvage``; by default learned from
+        ``store`` like ``history``.
     """
 
     def __init__(
@@ -176,11 +191,15 @@ class Scheduler:
         prune: bool = False,
         history: Mapping[str, TaskHistory] | None = None,
         history_runs: int = 20,
+        salvage: bool = False,
+        reuse: Mapping[str, ReuseHistory] | None = None,
     ) -> None:
         if async_limit < 1:
             raise ValueError("async_limit must be >= 1")
         if priority not in PRIORITIES:
             raise ValueError(f"priority must be one of {PRIORITIES}, got {priority!r}")
+        if salvage and not prune:
+            raise ValueError("salvage needs prune=True")
         self.dag = dag
         self.store = store if store is not None else StateStore()
         self.policy = policy or RetryPolicy()
@@ -194,6 +213,10 @@ class Scheduler:
         self._history_arg = history
         self._history_runs = history_runs
         self._scorer: FailureAwareRank | None = None
+        self._model: FailureModel | None = None
+        self.salvage = salvage
+        self._reuse_arg = reuse
+        self._reuse: ReuseModel | None = None
         self._rng = rng
         self.signatures = dict(signatures) if signatures is not None else None
         # Settings-only identities, recorded for the editor's "changed since this run".
@@ -209,7 +232,7 @@ class Scheduler:
         owned = self._router_arg is None
         self.router = self._router_arg or ExecutorRouter()
         self._reset()
-        if self.priority == "failure_aware":
+        if self.priority == "failure_aware" or self.salvage:
             # Learn before this run's own row exists, then keep learning during it.
             if self._history_arg is not None:
                 learned = {
@@ -218,7 +241,15 @@ class Scheduler:
                 }
             else:
                 learned = learn_history(self.store, self.flow, last_runs=self._history_runs)
-            self._scorer = FailureAwareRank(self.dag, FailureModel(learned))
+            self._model = FailureModel(learned)
+            if self.priority == "failure_aware":
+                self._scorer = FailureAwareRank(self.dag, self._model)
+        if self.salvage:
+            if self._reuse_arg is not None:
+                reuse = {n: ReuseHistory(h.chances, h.reused) for n, h in self._reuse_arg.items()}
+            else:
+                reuse = learn_reuse(self.store, self.flow, last_runs=self._history_runs)
+            self._reuse = ReuseModel(reuse)
         self.run_id = self.store.create_run(
             self.flow,
             self.dag,
@@ -294,6 +325,8 @@ class Scheduler:
         }
         # Tasks whose result will never exist in this run (SKIPPED, or FAILED and required).
         self._dead: set[str] = set()
+        # Doomed tasks kept to run in idle time because their results are likely reused.
+        self._salvage: set[str] = set()
         self._seq = itertools.count()
         self._pool_generation = 0
         self._abandoned = False
@@ -358,9 +391,12 @@ class Scheduler:
         for kind in KINDS:
             heap = self.ready[kind]
             while heap and self.in_use[kind] < self.capacity[kind]:
-                *_, name = heapq.heappop(heap)
+                entry = heapq.heappop(heap)
+                name = entry[-1]
                 if self.state[name] is not State.READY:  # pruned while queued
                     continue
+                if name in self._salvage and entry[0] <= 0:
+                    continue  # its entry from before it was doomed; a salvage entry follows
                 self._start(self.dag.tasks[name])
 
     def _start(self, task: Task) -> None:
@@ -422,8 +458,8 @@ class Scheduler:
         name = att.task.name
         self.results[name] = outcome.value
         self.errors.pop(name, None)
-        if self._scorer is not None:
-            self._scorer.model.record(name, False, outcome.finished_at - outcome.started_at)
+        if self._model is not None:
+            self._model.record(name, False, outcome.finished_at - outcome.started_at)
         self.store.record_attempt(
             self.run_id,
             name,
@@ -466,8 +502,8 @@ class Scheduler:
     ) -> None:
         task, name = att.task, att.task.name
         short, full = _short(exc), _describe(exc)
-        if self._scorer is not None:
-            self._scorer.model.record(name, True, None)
+        if self._model is not None:
+            self._model.record(name, True, None)
         self.errors[name] = short
         self.store.record_attempt(
             self.run_id, name, att.attempt, State.FAILED, full, started_at, finished_at, worker
@@ -502,21 +538,44 @@ class Scheduler:
             self._prune_doomed(name)
 
     def _prune_doomed(self, failed: str) -> None:
-        """Skip waiting tasks whose results could only have been used by dead tasks."""
+        """Skip waiting tasks whose results could only have been used by dead tasks.
+
+        With ``salvage``, a doomed task that is likely to be reused after this failure is
+        kept instead and runs after all live work of its kind.
+        """
         reason = f"pruned: only tasks skipped after {failed!r} failed needed its result"
         waiting = (State.PENDING, State.READY, State.RETRYING)
         for name in doomed(self.dag, self._dead):
-            if self.state[name] in waiting:
-                self.errors[name] = reason
-                self._set(name, State.SKIPPED, attempt=self.attempts[name], error=reason)
+            state = self.state[name]
+            if state not in waiting or name in self._salvage:
+                continue
+            if (
+                self._reuse is not None
+                and state is not State.RETRYING
+                and self._reuse.worth_salvaging(name)
+            ):
+                self._salvage.add(name)
+                if state is State.READY:
+                    self._push_salvage(name)
+                continue
+            self.errors[name] = reason
+            self._set(name, State.SKIPPED, attempt=self.attempts[name], error=reason)
         # Drop pruned retries now, so the loop doesn't sleep through their backoff.
         self.delayed = [e for e in self.delayed if self.state[e[2]] is State.RETRYING]
         heapq.heapify(self.delayed)
 
     # ----------------------------------------------------------------- helpers
+    def _push_salvage(self, name: str) -> None:
+        # A positive first field sorts after every live entry (theirs are 0 or -1).
+        kind = self.dag.tasks[name].kind
+        heapq.heappush(self.ready[kind], (1.0, 0.0, next(self._seq), name))
+
     def _make_ready(self, name: str) -> None:
         self._set(name, State.READY, attempt=self.attempts[name])
         task = self.dag.tasks[name]
+        if name in self._salvage:
+            self._push_salvage(name)
+            return
         if self._scorer is not None:
             promoted, rank = self._scorer.key(
                 name,

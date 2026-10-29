@@ -23,7 +23,7 @@ from typing import Any
 
 from benchmarks import workloads as W
 from miniflow import DAG, ExecutorRouter, RetryPolicy, Scheduler, State, StateStore, Task
-from miniflow.priority import doomed, learn_history
+from miniflow.priority import doomed, learn_history, learn_reuse
 
 SPAWN = multiprocessing.get_context("spawn")
 
@@ -88,7 +88,13 @@ class Correctness:
 
     def check(self, store: StateStore, run_id: str, dag: DAG) -> None:
         attempts = store.attempts(run_id)
-        finished = {a.task: a.finished_at for a in attempts if a.state is State.SUCCESS}
+        finished: dict[str, float | None] = {
+            a.task: a.finished_at for a in attempts if a.state is State.SUCCESS
+        }
+        # Results reused from an earlier run (resume) were ready before this run began.
+        for rec in store.changes_since(run_id, 0.0):
+            if rec.from_cache:
+                finished[rec.task] = float("-inf")
         for a in attempts:
             for up in dag.upstream[a.task]:
                 done = finished.get(up)
@@ -413,13 +419,15 @@ def gated(groups: int, heavy: int) -> W.Edges:
     return edges
 
 
-def _fa_tasks(edges: W.Edges, risky: set[str], seed: int, cfg: Config) -> list[Task]:
-    """Risky tasks are cheap and flaky (p = 0.35 per attempt); the rest are reliable."""
+def _fa_tasks(
+    edges: W.Edges, risky: set[str], seed: int, cfg: Config, p_risky: float = 0.35
+) -> list[Task]:
+    """Risky tasks are cheap and flaky (``p_risky`` per attempt); the rest are reliable."""
     costs = random.Random(f"costs:{sorted(edges)}")
     tasks = []
     for name, ups in edges.items():
         seconds = cfg.fa_task_seconds * (0.3 if name in risky else costs.uniform(1.0, 3.0))
-        p = 0.35 if name in risky else 0.0
+        p = p_risky if name in risky else 0.0
         tasks.append(
             W.build({name: ups}, W.flaky_io, retries=1, p=p, seed=seed, name=name, seconds=seconds)[
                 0
@@ -532,3 +540,120 @@ def failure_aware(cfg: Config, checker: Correctness) -> list[dict[str, Any]]:
         for key in ("failed_worker_s", "failed_wall_s", "ok_wall_s"):
             r[f"{key}_vs_default"] = r[key] / b[key] if b[key] else 1.0
     return rows
+
+
+# ------------------------------------------- 7. failure + resume (salvage)
+SALVAGE_POLICIES: dict[str, dict[str, Any]] = {
+    "critical path (default)": {},
+    "failure-aware + prune": {"priority": "failure_aware", "prune": True},
+    "failure-aware + prune + salvage": {
+        "priority": "failure_aware",
+        "prune": True,
+        "salvage": True,
+    },
+}
+
+
+def _spent(store: StateStore, run_id: str) -> float:
+    return sum(
+        a.finished_at - a.started_at
+        for a in store.attempts(run_id)
+        if a.started_at is not None and a.finished_at is not None
+    )
+
+
+def salvage_cycle(cfg: Config, checker: Correctness) -> list[dict[str, Any]]:
+    """Cost of a failed run plus what follows it, with and without salvage.
+
+    *Resumed*: failures are transient, so every failed run is resumed once the cause is
+    fixed (faults off), and the history the policies learn from was built the same way.
+    *Abandoned*: failed runs are never resumed (a fresh run comes next), in training and
+    in the evaluation, so only the failed run's cost counts.
+    """
+    policy = RetryPolicy(base=0.002, cap=0.01, jitter=0.0)
+    edges = gated(5, 6)
+    risky = {n for n in edges if n.startswith("gate")}
+    rows: list[dict[str, Any]] = []
+    with ExecutorRouter(io_workers=cfg.fa_workers) as router:
+        for regime in ("resumed", "abandoned"):
+            flow = f"salvage:{regime}"
+            with StateStore() as train:
+                for t in range(cfg.fa_train):
+                    W.reset_fault_counters()
+                    failed = Scheduler(
+                        DAG.from_tasks(_fa_tasks(edges, risky, 20_000 + t, cfg)),
+                        router=router,
+                        store=train,
+                        policy=policy,
+                        flow=flow,
+                    ).run()
+                    after = DAG.from_tasks(_fa_tasks(edges, risky, 20_000 + t, cfg, p_risky=0.0))
+                    W.reset_fault_counters()
+                    follow = Scheduler(after, router=router, store=train, policy=policy, flow=flow)
+                    if regime == "resumed" and not failed.ok:
+                        follow.run(resume_from=failed.run_id)
+                    else:
+                        follow.run()
+                history = learn_history(train, flow)
+                reuse = learn_reuse(train, flow)
+            for label, options in SALVAGE_POLICIES.items():
+                f_work, f_wall, r_work, r_wall, salvaged = [], [], [], [], []
+                for seed in range(cfg.fa_seeds):
+                    W.reset_fault_counters()
+                    dag = DAG.from_tasks(_fa_tasks(edges, risky, seed, cfg))
+                    with StateStore() as store:
+                        result = Scheduler(
+                            dag,
+                            router=router,
+                            store=store,
+                            policy=policy,
+                            flow=flow,
+                            history=history,
+                            reuse=reuse if options.get("salvage") else None,
+                            **options,
+                        ).run()
+                        checker.check(store, result.run_id, dag)
+                        if result.ok:
+                            continue
+                        f_work.append(_spent(store, result.run_id))
+                        f_wall.append(result.duration)
+                        salvaged.append(
+                            sum(
+                                1
+                                for n, st in result.states.items()
+                                if st is State.SUCCESS and n in doomed(dag, _dead(result))
+                            )
+                        )
+                        if regime == "resumed":
+                            W.reset_fault_counters()
+                            fixed = DAG.from_tasks(_fa_tasks(edges, risky, seed, cfg, p_risky=0.0))
+                            again = Scheduler(fixed, router=router, store=store, policy=policy).run(
+                                resume_from=result.run_id
+                            )
+                            checker.check(store, again.run_id, fixed)
+                            r_work.append(_spent(store, again.run_id))
+                            r_wall.append(again.duration)
+                mean = statistics.mean
+                row: dict[str, Any] = {
+                    "regime": regime,
+                    "policy": label,
+                    "failed_runs": len(f_work),
+                    "failed_worker_s": mean(f_work) if f_work else 0.0,
+                    "failed_wall_s": mean(f_wall) if f_wall else 0.0,
+                    "doomed_tasks_run": mean(salvaged) if salvaged else 0.0,
+                    "resume_worker_s": mean(r_work) if r_work else 0.0,
+                    "resume_wall_s": mean(r_wall) if r_wall else 0.0,
+                }
+                row["cycle_worker_s"] = row["failed_worker_s"] + row["resume_worker_s"]
+                row["cycle_wall_s"] = row["failed_wall_s"] + row["resume_wall_s"]
+                rows.append(row)
+    base = {r["regime"]: r for r in rows if r["policy"] == "critical path (default)"}
+    for r in rows:
+        b = base[r["regime"]]
+        for key in ("cycle_worker_s", "cycle_wall_s"):
+            r[f"{key}_vs_default"] = r[key] / b[key] if b[key] else 1.0
+    return rows
+
+
+def _dead(result: Any) -> set[str]:
+    return {n for n, s in result.states.items() if s in (State.SKIPPED, State.FAILED)}
