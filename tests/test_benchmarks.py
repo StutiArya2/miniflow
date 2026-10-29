@@ -101,3 +101,14 @@ def test_gated_and_etl_shapes_are_valid():
     for edges in (X.gated(2, 3), X.etl(3, 4, 2, seed=1)):
         DAG.from_tasks(W.build(edges, W.noop))
     assert X.gated(2, 3)["report0"] == ["gate0", "heavy0_0", "heavy0_1", "heavy0_2"]
+
+
+def test_salvage_experiment_adapts_and_stays_correct():
+    cfg = X.Config.quick()
+    checker = X.Correctness()
+    rows = X.salvage_cycle(cfg, checker)
+    assert {(r["regime"], r["policy"]) for r in rows} == {
+        (regime, policy) for regime in ("resumed", "abandoned") for policy in X.SALVAGE_POLICIES
+    }
+    assert all(r["resume_worker_s"] == 0.0 for r in rows if r["regime"] == "abandoned")
+    assert checker.violations == []

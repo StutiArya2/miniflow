@@ -229,7 +229,7 @@ miniflow run examples/ocean_watch.py --cpu-workers 1    # about 24 s: why cpu ta
 ### Failure-aware priority (opt-in)
 
 ```bash
-miniflow run flow.py --priority failure-aware --prune
+miniflow run flow.py --priority failure-aware --prune [--salvage]
 ```
 
 With `--priority failure-aware`, MiniFlow reads earlier runs of the same flow from
@@ -237,8 +237,10 @@ With `--priority failure-aware`, MiniFlow reads earlier runs of the same flow fr
 ready step early when its failure risk times the work its failure would make useless
 outweighs the delay it causes. `--prune` then skips waiting steps whose results can no
 longer reach any final step once something has failed for good (they run again on
-`resume`). Steps with no recorded failures keep the normal critical-path order. Details
-in `miniflow/priority.py`; measurements in section 6 of
+`resume`). `--salvage` (implies `--prune`) learns from history which pruned steps are
+usually reused after a resume and keeps those, running them after all live work, so a
+resume stays fast. Steps with no recorded failures keep the normal critical-path order. Details
+in `miniflow/priority.py`; measurements in sections 6 and 7 of
 [`docs/results/results.md`](docs/results/results.md).
 
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.

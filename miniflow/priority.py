@@ -45,10 +45,30 @@ tasks SKIPPED instead of running them. Ranking alone moves failure detection ear
 together with pruning, running risky tasks first turns that early detection into
 worker time that is never spent. Sinks are never pruned, and a pruned task reruns
 normally on ``resume``.
+
+Reuse-aware salvage (``salvage=True``)
+--------------------------------------
+Pruning defers work rather than deleting it when the failed run is later resumed: the
+pruned steps run during the resume, on its critical path. Salvage decides per doomed
+task between pruning and keeping it:
+
+5. **Reuse model.** :func:`learn_reuse` pairs each failed run with the next run of the
+   same flow and counts, per task, how often a result computed in the failed run was
+   taken from the cache by the next one (:class:`ReuseModel`, Beta prior).
+6. **Adaptive pruning.** A doomed task whose reuse probability reaches the threshold
+   (``p * c > (1 - p) * c``, so 0.5) is kept instead of pruned, but sorts after every
+   live ready task, so it only uses workers that live work doesn't need. Anything
+   below the threshold is pruned as before.
+
+So a flow whose failures are usually transient and resumed keeps computing its doomed
+work, which the resume then reuses instead of redoing on its own critical path, while a
+flow whose failures are abandoned learns low reuse and behaves like plain pruning.
+Neither fixed choice is best in both situations; the learned decision picks per task.
 """
 
 from __future__ import annotations
 
+import itertools
 import statistics
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping
@@ -62,10 +82,13 @@ from miniflow.task import Task
 __all__ = [
     "FailureAwareRank",
     "FailureModel",
+    "ReuseHistory",
+    "ReuseModel",
     "TaskHistory",
     "doomed",
     "expected_attempts",
     "learn_history",
+    "learn_reuse",
     "static_keys",
 ]
 
@@ -265,3 +288,64 @@ def static_keys(dag: DAG, model: FailureModel) -> Mapping[str, Key]:
     """Keys of every task before anything has run (for inspection and tests)."""
     rank = FailureAwareRank(dag, model)
     return {n: rank.key(n, attempts_used=0, open_tasks=lambda _u: True) for n in dag.tasks}
+
+
+# ---------------------------------------------------------------------- salvage
+@dataclass
+class ReuseHistory:
+    """How often a task's result from a failed run was reused by the next run."""
+
+    chances: int = 0
+    reused: int = 0
+
+
+def learn_reuse(store: StateStore, flow: str, *, last_runs: int = 20) -> dict[str, ReuseHistory]:
+    """Per-task reuse statistics from consecutive runs of ``flow``.
+
+    For each FAILED run among the newest ``last_runs`` runs (except the newest), every
+    task that ran and succeeded in it is a *chance*; it counts as *reused* when the next
+    run of the flow took that task's result from the cache (a resume, or ``--reuse``)
+    instead of computing it again. A failed run that was never followed up contributes
+    chances but no reuse, so a flow whose failures are abandoned learns not to salvage.
+    """
+    if last_runs < 2:
+        return {}
+    runs = [r for r in store.list_runs() if r.flow == flow][:last_runs]
+    stats: dict[str, ReuseHistory] = {}
+    # list_runs is newest first: runs[i + 1] is the run before runs[i].
+    for later, earlier in itertools.pairwise(runs):
+        if earlier.status != "FAILED":
+            continue
+        cached = {r.task for r in store.changes_since(later.run_id, 0.0) if r.from_cache}
+        for rec in store.changes_since(earlier.run_id, 0.0):
+            if rec.state is State.SUCCESS and not rec.from_cache:
+                h = stats.setdefault(rec.task, ReuseHistory())
+                h.chances += 1
+                h.reused += rec.task in cached
+    return stats
+
+
+@dataclass
+class ReuseModel:
+    """Beta-Bernoulli estimate of the chance that a task's result is reused after a failure.
+
+    The default prior has a mean of 30 % with the weight of two observations, so a task is
+    salvaged (``threshold`` 0.5) only once history shows its results tend to be reused.
+    """
+
+    history: dict[str, ReuseHistory] = field(default_factory=dict)
+    prior_reused: float = 0.6
+    prior_chances: float = 2.0
+    threshold: float = 0.5
+
+    def __post_init__(self) -> None:
+        if not 0 < self.prior_reused < self.prior_chances:
+            raise ValueError("need 0 < prior_reused < prior_chances")
+
+    def p_reuse(self, name: str) -> float:
+        h = self.history.get(name)
+        reused, chances = (h.reused, h.chances) if h else (0, 0)
+        return (reused + self.prior_reused) / (chances + self.prior_chances)
+
+    def worth_salvaging(self, name: str) -> bool:
+        return self.p_reuse(name) >= self.threshold

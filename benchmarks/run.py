@@ -30,6 +30,7 @@ EXPERIMENTS: dict[str, tuple[str, Callable[[X.Config, X.Correctness], list[dict[
     "e3": ("overhead", X.overhead),
     "e4": ("fault_tolerance", X.fault_tolerance),
     "e6": ("failure_aware", X.failure_aware),
+    "e7": ("salvage", X.salvage_cycle),
 }
 
 
@@ -216,6 +217,32 @@ def summary(
             ),
             "",
             "![Failure-aware](e6_failure_aware.png)" if "e6_failure_aware.png" in figures else "",
+            "",
+        ]
+    if "e7" in results:
+        out += [
+            "## 7. Failure and resume: reuse-aware salvage",
+            "",
+            "The gated-join workload, counting a failed run plus what follows it. *Resumed*: "
+            "failures are transient and every failed run is resumed after the fix. *Abandoned*: "
+            "failed runs are never resumed. Each regime's policies learn from training runs "
+            "of that regime. *salvage* keeps doomed steps whose results were usually reused "
+            "after a failure, running them after the live work, and prunes the rest.",
+            "",
+            _table(
+                results["e7"],
+                [
+                    ("regime", "regime"),
+                    ("policy", "policy"),
+                    ("doomed_tasks_run", "doomed steps run"),
+                    ("failed_worker_s", "failed run worker s"),
+                    ("failed_wall_s", "failed run wall (s)"),
+                    ("resume_wall_s", "resume wall (s)"),
+                    ("cycle_worker_s", "total worker s"),
+                    ("cycle_worker_s_vs_default", "×"),
+                    ("cycle_wall_s", "total wall (s)"),
+                ],
+            ),
             "",
         ]
     c = results["e5"][0]
