@@ -33,29 +33,104 @@
       </label>
       <div class="theme-picker">
         <button type="button" id="theme" class="icon-btn" title="Theme" aria-label="Choose a theme" aria-haspopup="menu" aria-expanded="false" aria-controls="theme-menu"></button>
-        <div class="theme-menu" id="theme-menu" role="menu" aria-label="Theme" hidden></div>
+        <div class="theme-menu" id="theme-menu" aria-label="Theme" hidden></div>
       </div>
     </div>
   </aside>
 
   <main id="app">
     <section id="studio" class="studio" hidden aria-label="Workflow editor">
-      <div class="studio-toolbar panel">
-        <label>Flow <select id="studio-flow"></select></label>
-        <button type="button" id="studio-new" class="btn">New</button>
-        <label>Starter <select id="studio-template"></select></label>
-        <button type="button" id="studio-use-template" class="btn">Use starter</button>
-        <label>Name <input id="studio-name" autocomplete="off" pattern="[A-Za-z_][A-Za-z0-9_\-]*"></label>
-        <label>Environment <select id="studio-environment"><option value="">Default</option></select></label>
-        <button type="button" id="studio-validate" class="btn">Validate</button>
-        <button type="button" id="studio-test" class="btn">Test</button>
-        <label>Save note <input id="studio-save-message" autocomplete="off" placeholder="What changed? (optional)"></label>
-        <button type="button" id="studio-save" class="btn">Save</button>
-        <button type="button" id="studio-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Run</button>
-        <button type="button" id="studio-stop" class="btn danger" disabled title="Available while this flow is running">■ Stop workflow</button>
-        <button type="button" id="studio-partial" class="btn">Run up to selected</button>
+      <div id="studio-setup" class="studio-setup" hidden>
+        <div class="setup-card">
+          <div class="setup-top">
+            <button type="button" id="setup-back" class="btn setup-back" hidden>← Back</button>
+            <div id="setup-progress" class="setup-progress" aria-live="polite"></div>
+          </div>
+          <div id="setup-step" class="setup-step"></div>
+        </div>
       </div>
-      <div class="studio-sections">
+      <div id="studio-workspace" class="studio-workspace" hidden>
+      <header class="studio-bar panel">
+        <button type="button" id="studio-back" class="btn studio-back" title="Open or create another flow">← Flows</button>
+        <label class="studio-bar-name"><span class="sr-only">Flow name</span><input id="studio-name" autocomplete="off" spellcheck="false" pattern="[A-Za-z_][A-Za-z0-9_\-]*"></label>
+        <label class="studio-bar-env" title="Environment used when you test or run"><span>Environment</span><select id="studio-environment"><option value="">Default</option></select></label>
+        <select id="studio-flow" hidden aria-hidden="true" tabindex="-1"></select>
+        <select id="studio-template" hidden aria-hidden="true" tabindex="-1"></select>
+        <button type="button" id="studio-new" hidden>New</button>
+        <button type="button" id="studio-use-template" hidden>Use starter</button>
+        <span class="studio-bar-gap"></span>
+        <div class="studio-claude-actions" id="studio-claude-actions" hidden>
+          <button type="button" id="studio-connect-claude" class="btn">Connect Claude</button>
+          <button type="button" id="studio-ask-claude" class="btn" aria-controls="studio-claude-pane" aria-expanded="false">Ask Claude</button>
+        </div>
+        <button type="button" id="studio-settings-open" class="btn" aria-haspopup="dialog">Flow settings</button>
+        <details id="studio-more" class="studio-more">
+          <summary class="btn">More</summary>
+          <div class="studio-more-menu">
+            <button type="button" id="studio-validate">Check for problems</button>
+            <button type="button" id="studio-test">Run flow tests</button>
+            <button type="button" id="studio-partial">Run up to the selected step</button>
+            <label class="studio-more-note">Note for the next save<input id="studio-save-message" autocomplete="off" placeholder="What changed? (optional)"></label>
+          </div>
+        </details>
+        <button type="button" id="studio-save" class="btn">Save</button>
+        <button type="button" id="studio-stop" class="btn danger" disabled title="Available while this flow is running">■ Stop</button>
+        <button type="button" id="studio-run" class="btn primary"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8a.5.5 0 0 0-.76.43z" fill="currentColor"/></svg> Run</button>
+      </header>
+      <div class="studio-layout">
+        <aside class="studio-palette panel">
+          <h2>Blocks</h2>
+          <button type="button" id="studio-drafts" class="btn studio-drafts-button" hidden>Pending blocks</button>
+          <label class="sr-only" for="studio-search">Search blocks</label>
+          <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
+          <div id="studio-blocks" class="studio-blocks"></div>
+          <h3>Custom blocks</h3>
+          <button type="button" id="studio-custom-create" class="btn">Create custom block</button>
+          <div id="studio-custom-blocks" class="studio-blocks"></div>
+          <h3>Reusable flows</h3>
+          <div id="studio-subflows" class="studio-blocks"></div>
+        </aside>
+        <div class="studio-center">
+          <div class="studio-canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button type="button" id="studio-undo" class="btn" title="Undo (Ctrl+Z)">Undo</button>
+            <button type="button" id="studio-redo" class="btn" title="Redo (Ctrl+Shift+Z)">Redo</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-copy" class="btn" title="Copy selected steps (Ctrl+C)">Copy</button>
+            <button type="button" id="studio-paste" class="btn" title="Paste (Ctrl+V)">Paste</button>
+            <button type="button" id="studio-duplicate" class="btn" title="Duplicate (Ctrl+D)">Duplicate</button>
+            <span class="sep"></span>
+            <button type="button" id="studio-zoom-out" class="btn" title="Zoom out" aria-label="Zoom out">−</button>
+            <span id="studio-zoom-level" class="studio-zoom-level">100%</span>
+            <button type="button" id="studio-zoom-in" class="btn" title="Zoom in" aria-label="Zoom in">+</button>
+            <button type="button" id="studio-fit" class="btn" title="Fit the flow on screen">Fit</button>
+            <button type="button" id="studio-tidy" class="btn" title="Arrange steps by dependency">Tidy up</button>
+            <label class="studio-run-pick">Show run <select id="studio-run-data"><option value="">No runs yet</option></select></label>
+          </div>
+          <div id="studio-sync" class="studio-sync" role="status" hidden>
+            <span id="studio-sync-text"></span>
+            <button type="button" id="studio-sync-show" class="btn">Show changes</button>
+            <button type="button" id="studio-sync-clear" class="btn">Clear highlights</button>
+            <button type="button" id="studio-sync-load" class="btn primary">Load their version</button>
+            <button type="button" id="studio-sync-keep" class="btn">Keep my edits</button>
+          </div>
+          <div class="studio-canvas-scroll">
+            <div id="studio-canvas" class="studio-canvas" aria-label="Workflow canvas">
+              <svg id="studio-wires" aria-hidden="true"></svg>
+              <div id="studio-nodes"></div>
+            </div>
+          </div>
+          <div id="studio-message" class="studio-message" role="status">Select a block to configure it.</div>
+          <ul id="studio-problems" class="studio-problems" aria-label="Problems in this flow" hidden></ul>
+        </div>
+        <aside class="studio-inspector panel">
+          <h2 id="studio-inspector-title">Settings</h2>
+          <div id="studio-settings"><p class="muted">Select a node on the canvas.</p></div>
+        </aside>
+      </div>
+      </div>
+      <dialog id="studio-flow-settings" class="studio-flow-settings" aria-labelledby="studio-flow-settings-title">
+        <header><h2 id="studio-flow-settings-title">Flow settings</h2><button type="button" id="studio-flow-settings-close" class="btn">Done</button></header>
+        <div class="studio-sections">
         <div class="studio-section-tabs" role="tablist" aria-label="Workflow settings">
           <button type="button" id="studio-test-tab" role="tab" aria-controls="studio-test-panel" aria-selected="true" tabindex="0">Flow tests</button>
           <button type="button" id="studio-schedule-tab" role="tab" aria-controls="studio-schedule-panel" aria-selected="false" tabindex="-1">Schedules</button>
@@ -84,48 +159,7 @@
           <div id="studio-params-editor"></div>
         </section>
       </div>
-      <div class="studio-layout">
-        <aside class="studio-palette panel">
-          <h2>Blocks</h2>
-          <label class="sr-only" for="studio-search">Search blocks</label>
-          <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
-          <div id="studio-blocks" class="studio-blocks"></div>
-          <h3>Custom blocks</h3>
-          <button type="button" id="studio-custom-create" class="btn">Create custom block</button>
-          <div id="studio-custom-blocks" class="studio-blocks"></div>
-          <h3>Reusable flows</h3>
-          <div id="studio-subflows" class="studio-blocks"></div>
-        </aside>
-        <div class="studio-center">
-          <div class="studio-canvas-tools" role="toolbar" aria-label="Canvas tools">
-            <button type="button" id="studio-undo" class="btn" title="Undo (Ctrl+Z)">Undo</button>
-            <button type="button" id="studio-redo" class="btn" title="Redo (Ctrl+Shift+Z)">Redo</button>
-            <span class="sep"></span>
-            <button type="button" id="studio-copy" class="btn" title="Copy selected steps (Ctrl+C)">Copy</button>
-            <button type="button" id="studio-paste" class="btn" title="Paste (Ctrl+V)">Paste</button>
-            <button type="button" id="studio-duplicate" class="btn" title="Duplicate (Ctrl+D)">Duplicate</button>
-            <span class="sep"></span>
-            <button type="button" id="studio-zoom-out" class="btn" title="Zoom out" aria-label="Zoom out">−</button>
-            <span id="studio-zoom-level" class="studio-zoom-level">100%</span>
-            <button type="button" id="studio-zoom-in" class="btn" title="Zoom in" aria-label="Zoom in">+</button>
-            <button type="button" id="studio-fit" class="btn" title="Fit the flow on screen">Fit</button>
-            <button type="button" id="studio-tidy" class="btn" title="Arrange steps by dependency">Tidy up</button>
-            <label class="studio-run-pick">Show run <select id="studio-run-data"><option value="">No runs yet</option></select></label>
-          </div>
-          <div class="studio-canvas-scroll">
-            <div id="studio-canvas" class="studio-canvas" aria-label="Workflow canvas">
-              <svg id="studio-wires" aria-hidden="true"></svg>
-              <div id="studio-nodes"></div>
-            </div>
-          </div>
-          <div id="studio-message" class="studio-message" role="status">Select a block to configure it.</div>
-          <ul id="studio-problems" class="studio-problems" aria-label="Problems in this flow" hidden></ul>
-        </div>
-        <aside class="studio-inspector panel">
-          <h2 id="studio-inspector-title">Settings</h2>
-          <div id="studio-settings"><p class="muted">Select a node on the canvas.</p></div>
-        </aside>
-      </div>
+      </dialog>
     </section>
     <section id="custom-builder" class="custom-builder" hidden aria-label="Custom block builder">
       <div class="panel custom-head">
@@ -217,6 +251,7 @@
       <section class="block outcome" id="outcome" aria-labelledby="outcome-title">
         <h2 id="outcome-title">Results</h2>
         <div id="outcome-body"></div>
+        <div id="outcome-files" class="outcome-files"></div>
       </section>
 
       <div class="workbench">
@@ -274,13 +309,66 @@
     </section>
   </main>
 
+  <aside id="studio-claude-pane" class="studio-claude-pane" aria-labelledby="studio-claude-title" hidden>
+    <header><h2 id="studio-claude-title">Ask Claude</h2><button type="button" id="studio-claude-close" class="btn" aria-label="Close Claude chat">Close</button></header>
+    <p class="hint">Build, change or explain a saved flow. Review custom Python code in Pending blocks.</p>
+    <p id="studio-claude-context" class="hint"></p>
+    <div class="claude-chat-actions"><button type="button" id="studio-claude-reload" class="btn">Reload saved flow</button><button type="button" id="studio-claude-new" class="btn">New chat</button></div>
+    <div id="studio-claude-messages" class="claude-messages" role="log" aria-label="Claude conversation" aria-live="polite"></div>
+    <p id="studio-claude-error" class="studio-message error" role="alert" hidden></p>
+    <form id="studio-claude-form" class="claude-composer">
+      <label for="studio-claude-prompt" class="sr-only">Message Claude</label>
+      <textarea id="studio-claude-prompt" rows="3" maxlength="12000" placeholder="Ask Claude to help with your flow…"></textarea>
+      <div><span id="studio-claude-state" class="hint" role="status"></span><button type="button" id="studio-claude-stop" class="btn danger" hidden>Stop</button><button type="submit" id="studio-claude-send" class="btn primary">Send</button></div>
+      <p class="hint">Messages and tool results are sent to Claude. Uses your Claude Code account.</p>
+    </form>
+  </aside>
+
+  <dialog id="studio-claude-dialog" class="studio-claude-dialog" aria-labelledby="studio-claude-connect-title">
+    <header><h2 id="studio-claude-connect-title">Connect Claude</h2><button type="button" id="studio-claude-connect-close" class="btn">Close</button></header>
+    <div class="claude-connect-tabs" role="tablist" aria-label="Claude connection">
+      <button type="button" id="claude-tab-inside" role="tab" aria-controls="claude-connect-inside" aria-selected="true">Inside MiniFlow</button>
+      <button type="button" id="claude-tab-code" role="tab" aria-controls="claude-connect-code" aria-selected="false" tabindex="-1">Claude Code</button>
+      <button type="button" id="claude-tab-desktop" role="tab" aria-controls="claude-connect-desktop" aria-selected="false" tabindex="-1">Claude Desktop</button>
+    </div>
+    <section id="claude-connect-inside" role="tabpanel" aria-labelledby="claude-tab-inside">
+      <h3 id="claude-login-title">Checking connection…</h3><p id="claude-login-detail" class="hint"></p>
+      <div class="claude-chat-actions"><button type="button" id="claude-login" class="btn primary">Sign in with Claude</button><button type="button" id="claude-check" class="btn">Check connection</button></div>
+      <p class="hint">If the browser sign-in does not finish, run this command in Terminal:</p><textarea id="claude-login-command" class="claude-config" readonly aria-label="Claude sign-in command" rows="2"></textarea><button type="button" class="btn claude-copy" data-copy="claude-login-command">Copy sign-in command</button>
+      <p class="hint">Claude Code is required for chat. <a href="https://code.claude.com/docs/en/quickstart" target="_blank" rel="noopener noreferrer">Installation instructions</a></p>
+    </section>
+    <section id="claude-connect-code" role="tabpanel" aria-labelledby="claude-tab-code" hidden>
+      <p>Run this command in Terminal to give Claude Code access to this MiniFlow workspace.</p><textarea id="claude-code-command" class="claude-config" readonly aria-label="Claude Code setup command" rows="7"></textarea><button type="button" class="btn claude-copy" data-copy="claude-code-command">Copy setup command</button><p class="hint">Restart your Claude Code session after adding the server. An existing server named miniflow may need removal first.</p>
+    </section>
+    <section id="claude-connect-desktop" role="tabpanel" aria-labelledby="claude-tab-desktop" hidden>
+      <p>In Claude Desktop, open Settings → Developer → Edit Config. Merge this entry into your existing mcpServers, then restart Claude Desktop.</p><textarea id="claude-desktop-config" class="claude-config" readonly aria-label="Claude Desktop MCP configuration" rows="12"></textarea><button type="button" class="btn claude-copy" data-copy="claude-desktop-config">Copy configuration</button><p class="hint">These paths point to this MiniFlow installation and its saved flows. Custom block drafts still require review in MiniFlow.</p>
+    </section>
+    <p id="claude-connect-message" class="studio-message" role="status"></p>
+  </dialog>
+
+  <dialog id="studio-drafts-dialog" class="studio-drafts-dialog" aria-labelledby="studio-drafts-title">
+    <header>
+      <h2 id="studio-drafts-title">Pending blocks</h2>
+      <button type="button" id="studio-drafts-close" class="btn">Close</button>
+    </header>
+    <p class="hint">An agent drafted these blocks. Nothing in them runs until you approve one, and an approved block runs with your permissions, so read the code first.</p>
+    <p id="studio-drafts-error" class="studio-message error" hidden></p>
+    <div id="studio-drafts-list"></div>
+  </dialog>
+
   <script src="/static/charts.js"></script>
+  <script src="/static/outputs.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/editor-history.js"></script>
   <script src="/static/editor-view.js"></script>
   <script src="/static/editor-versions.js"></script>
   <script src="/static/editor-data.js"></script>
   <script src="/static/custom-builder.js"></script>
+  <script src="/static/editor-setup.js"></script>
+  <script src="/static/editor-sync.js"></script>
+  <script src="/static/editor-drafts.js"></script>
+  <script src="/static/chat-markdown.js"></script>
+  <script src="/static/editor-claude.js"></script>
   <script src="/static/editor.js"></script>
 </body>
 </html>

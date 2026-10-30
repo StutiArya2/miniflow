@@ -87,7 +87,7 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
   - alerts, AI and cloud: `webhook`, `slack_message`, `teams_message`, `llm_prompt` (Anthropic or
     any OpenAI-compatible API), `s3_get`, `s3_put` (AWS or MinIO-style servers). Webhook URLs, API
     keys and cloud credentials must come from `{{ env.NAME }}`.
-  - Excel: `read_xlsx`, `write_xlsx` (plain data sheets, no outside library)
+  - Excel and Word: `read_xlsx`, `write_xlsx`, `write_docx` (no outside library)
   - dates and text: `date_format`, `date_add`, `date_diff` (a single value, or a field of every
     row) and `text_template` (turn rows into an email or chat message)
   - databases: `postgres`, `mysql`. These need a driver the core doesn't install: run
@@ -248,6 +248,23 @@ miniflow run examples/ocean_watch.py                    # about 6 s (10 s the fi
 miniflow run examples/ocean_watch.py --cpu-workers 1    # about 24 s: why cpu tasks use processes
 ```
 
+### Failure-aware priority (opt-in)
+
+```bash
+miniflow run flow.py --priority failure-aware --prune [--salvage]
+```
+
+With `--priority failure-aware`, MiniFlow reads earlier runs of the same flow from
+`miniflow.db`, estimates how often each step fails and how long it takes, and starts a
+ready step early when its failure risk times the work its failure would make useless
+outweighs the delay it causes. `--prune` then skips waiting steps whose results can no
+longer reach any final step once something has failed for good (they run again on
+`resume`). `--salvage` (implies `--prune`) learns from history which pruned steps are
+usually reused after a resume and keeps those, running them after all live work, so a
+resume stays fast. Steps with no recorded failures keep the normal critical-path order. Details
+in `miniflow/priority.py`; measurements in sections 6 and 7 of
+[`docs/results/results.md`](docs/results/results.md).
+
 `run` exits with 0 on success, 1 if any task failed, and 130 when interrupted.
 State lives in `miniflow.db` (SQLite; change it with `--db`). `examples/faulty_etl.py`
 injects failures (`MINIFLOW_FAIL_RATE`, default 0.4) and a hanging task with a timeout.
@@ -269,6 +286,64 @@ processes are spawned and re-import your module, so cpu functions must be at mod
 **Timeouts:** a coroutine that times out is cancelled. Python can't stop a running
 thread or process, so a timed-out `io` or `cpu` task is marked failed and left to
 finish in the background. The CLI exits straight away instead of waiting for it.
+
+## Agents (MCP)
+
+`miniflow mcp` lets an agent such as Claude Code or Claude Desktop build and run flows: it
+reads the block list, writes and validates flows, saves them, runs them and reads the
+results. Connect it to Claude Code with absolute paths:
+
+```bash
+claude mcp add miniflow -- uv run --directory /path/to/miniflow miniflow mcp --flows /path/to/flows --db /path/to/miniflow.db
+```
+
+For Claude Desktop, add this to its `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "miniflow": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/miniflow", "miniflow", "mcp",
+               "--flows", "/path/to/flows", "--db", "/path/to/miniflow.db"]
+    }
+  }
+}
+```
+
+- Every save the agent makes is validated first and labelled `(agent)` in the flow's
+  history, so the Editor's History tab can undo it. It can't overwrite a flow you changed
+  after it read it, and it never sees the values in your environment files.
+- Runs go to the dashboard for that database (`miniflow serve`), in the same queue as your
+  Run button. If none is running, the agent starts one and stops it when it exits.
+- The agent can't install code. It can draft a block; you review it in the Editor under
+  **Pending blocks** (or with `miniflow approve-block NAME --flows DIR`) and approve or
+  discard it. An agent that can also run shell commands could write files itself, so for
+  Claude Code the review is a check, and its own permission prompts are the guard.
+- `--read-only` keeps only the tools that change nothing; `--no-runs` drops the run tools.
+
+### Claude in the Editor
+
+On a dashboard started with `miniflow serve --flows DIR`, the Editor has **Ask Claude**
+and **Connect Claude** buttons. Ask Claude uses the installed Claude Code CLI and its
+existing account login; no API key is entered in MiniFlow. Connect Claude provides browser
+sign-in, a connection check, and copyable configuration for Claude Code or Claude Desktop.
+The configuration uses the running Python interpreter and absolute workspace paths, including
+bundled runtime paths in the macOS app.
+
+Chat works with saved flows. Save your edits before asking Claude to change them, and use
+**Reload saved flow** after an agent saves changes. The conversation is kept in memory until
+**New chat** or dashboard shutdown (up to 12 exchanges). Stop cancels the current response;
+custom block drafts still need human approval in Pending blocks. The chat client has only
+MiniFlow's MCP tools, with builtin tools, custom skills, hooks and inherited MCP servers disabled.
+Assistant responses render headings, lists, tables, links and fenced code as formatted messages;
+wide tables and diagrams scroll within the message. Raw HTML is treated as text. Tool activity
+is available in a collapsed details section.
+Messages and tool results are sent to Claude under your existing account's usage terms.
+A local login check can find stored credentials even when their token has expired; an
+expired-token response directs you back to Connect Claude to sign in again. A turn can run
+for up to 30 minutes while making progress; five minutes without streaming activity stops
+a stalled client. Saved workflows and drafts survive a cancelled or timed-out turn.
 
 ## Evaluation (spec §3.8)
 
@@ -308,3 +383,7 @@ uv run mkdocs serve                  # docs site
 
 Optional extras: `miniflow[rich]` (live progress table), `miniflow[viz]`
 (render the DAG to PNG/SVG; also needs the Graphviz `dot` program on PATH).
+
+To put this checkout's code into the macOS app (it bundles its own copy of `miniflow/`),
+run `scripts/update-app.sh` (add `--check` to run the tests first). It bumps the build
+number, re-signs the app and keeps the previous version in a temporary folder.

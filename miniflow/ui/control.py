@@ -9,6 +9,7 @@ Each run is a separate ``python -m miniflow run|resume <file> --db <db> --quiet`
 process with ``MINIFLOW_FAIL_RATE`` set from the dashboard. It behaves exactly
 like a run started in a terminal and writes to the same state database that the
 dashboard reads, so the live view needs nothing extra. One run is active at a time.
+A JSON flow saved into the folder after startup is found the first time it is asked for.
 
 Runs started by schedules and triggers (:meth:`RunController.enqueue`) wait in a first-in,
 first-out queue when a run is active, instead of being refused; the Run button of a person
@@ -146,9 +147,15 @@ class RunController:
         files = sorted([*folder.glob("*.py"), *folder.glob("*.json")], key=lambda p: p.name)
         self.flows: dict[str, Path] = {}
         for p in files:
-            if p.is_file() and not p.name.startswith("_"):
+            if (
+                p.is_file()
+                and not p.is_symlink()
+                and not p.name.startswith("_")
+                and p.resolve().parent == folder.resolve()
+            ):
                 self.flows.setdefault(p.stem, p.resolve())  # a .py and .json of one name: .json
         self.flows = dict(sorted(self.flows.items()))
+        self.folder = folder.resolve()
         self.store = store
         self.db = str(Path(store.path).resolve())
         self.grace = grace
@@ -168,7 +175,7 @@ class RunController:
     def start(self, flow: str, fail_rate: object, environment: object = None) -> dict[str, Any]:
         """Run ``flow`` with ``MINIFLOW_FAIL_RATE=fail_rate``; returns the active run."""
         rate = _check_rate(fail_rate)
-        path = self.flows.get(flow)
+        path = self._flow_path(flow)
         if path is None:
             raise ControlError(f"no flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
         extra = self._environment_args(path, environment)
@@ -180,7 +187,7 @@ class RunController:
         meta = self._run(run_id)
         if meta is None:
             raise ControlError(f"no run {run_id!r}", HTTPStatus.NOT_FOUND)
-        path = self.flows.get(meta.flow)
+        path = self._flow_path(meta.flow)
         if path is None:
             raise ControlError(
                 f"flow {meta.flow!r} of run {run_id} is not in the flows folder",
@@ -190,7 +197,7 @@ class RunController:
 
     def partial(self, flow: str, step: str, environment: object = None) -> dict[str, Any]:
         """Run through one JSON step, reusing only matching earlier results."""
-        path = self.flows.get(flow)
+        path = self._flow_path(flow)
         if path is None or path.suffix != ".json":
             raise ControlError(f"no JSON flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
         try:
@@ -233,7 +240,7 @@ class RunController:
         when it ends, with a message if its process failed rather than the flow. ``source``
         names what asked (``schedule:nightly``); it can wait in the queue only once.
         """
-        path = self.flows.get(flow)
+        path = self._flow_path(flow)
         if path is None:
             raise ControlError(f"no flow {flow!r} in the flows folder", HTTPStatus.NOT_FOUND)
         item = _Queued(
@@ -335,6 +342,30 @@ class RunController:
             if child is None:
                 raise ControlError(self._error or "run could not start", HTTPStatus.BAD_GATEWAY)
             return child.as_json()
+
+    def _flow_path(self, flow: str) -> Path | None:
+        """The flow's file. A JSON flow saved after startup (by the Editor of another
+        process, or an agent) is found here and remembered."""
+        path = self.flows.get(flow)
+        if not _ENV_NAME.fullmatch(flow) or flow.startswith("_"):
+            return None
+        if path is not None:
+            return (
+                path
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and path.resolve().parent == self.folder
+                )
+                else None
+            )
+        candidate = self.folder / f"{flow}.json"
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+        if candidate.resolve().parent != self.folder:
+            return None
+        self.add_flow(flow, candidate)
+        return candidate.resolve()
 
     def _can_start(self, flow: str) -> bool:
         return len(self._children) < self.max_concurrent and all(

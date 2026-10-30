@@ -599,6 +599,11 @@ function renderDetails() {
     h("div", { class: "detail-sub" }, pill(t.state), facts ? h("span", { class: "muted" }, facts) : null),
     info.description ? h("p", { class: "desc" }, info.description) : null,
     t.preview ? [h("div", { class: "section-title" }, t.from_cache ? "Result (reused from the previous run)" : "Result"), h("pre", { class: "preview box" }, t.preview)] : null,
+    (() => {
+      const file = (Outputs.lists.get(S.runId) || []).find((o) => o.task === name);
+      return file ? [h("div", { class: "section-title" }, "Output file"),
+        h("div", { class: "out-detail" }, outputsButton(S.runId, file, `Open ${file.name}`))] : null;
+    })(),
     t.sample !== null && t.sample !== undefined && typeof t.sample === "object" ? [
       h("div", { class: "section-title" }, "Sample output"), renderSample(t.sample, t.item_count),
     ] : null,
@@ -797,7 +802,9 @@ function renderOutcome() {
   const chosen = ((S.graph.about || {}).highlights || []).filter((n) => n in S.graph.tasks);
   const shown = (chosen.length ? chosen : names.filter((n) => !used.has(n)))
     .filter((n) => !["FAILED", "SKIPPED"].includes((S.tasks.get(n) || {}).state));
-  $("outcome").hidden = shown.length === 0;
+  const files = Outputs.lists.get(S.runId) || [];
+  $("outcome").hidden = shown.length === 0 && files.length === 0;
+  renderOutputs();
   const items = shown.map((n) => {
     const t = S.tasks.get(n) || { state: "PENDING" };
     const info = S.graph.tasks[n];
@@ -811,6 +818,28 @@ function renderOutcome() {
       h("pre", { class: "preview" }, text));
   });
   body.replaceChildren(h("div", { class: "outcome-items" }, items));
+}
+
+// Files the run wrote (CSV, Excel, Word…), shown under the results. The list is
+// fetched again whenever more steps finish; the preview is redrawn only if it changed.
+let outputsShown = "";
+async function renderOutputs() {
+  const host = $("outcome-files");
+  if (!host || !S.runId || !S.run) return;
+  const runId = S.runId;
+  const done = [...S.tasks.values()].filter((t) => t.state === "SUCCESS").length;
+  let list;
+  try { list = await outputsFor(runId, `${done}:${S.run.finished_at || ""}`); } catch { return; }
+  if (runId !== S.runId) return;
+  const key = `${runId}:${JSON.stringify(list)}`;
+  if (key === outputsShown) return;
+  outputsShown = key;
+  if (list.length) $("outcome").hidden = false;
+  host.replaceChildren(...(list.length ? [
+    h("div", { class: "section-title" }, list.length === 1 ? "File it wrote" : `Files it wrote (${list.length})`),
+    outputsPanel(runId, list),
+  ] : []));
+  renderDetails();
 }
 // -------------------------------------------------------------------- init
 function init() {

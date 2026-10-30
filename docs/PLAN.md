@@ -171,6 +171,26 @@ Configurable parallel run slots are implemented for different flows; repeat laun
 flow wait in the queue. The browser demo covered the schedule editor, webhook and file trigger;
 the milestone PR remains.
 
+### V4 milestone 1: agents over MCP ✅
+Design: `docs/superpowers/specs/2026-10-14-mcp-server-design.md`; plan:
+`docs/superpowers/plans/2026-10-14-mcp-server.md`.
+- `miniflow mcp`: a standard-library MCP server (`miniflow/agent/`) with tools to read blocks,
+  validate, save (with version checks), test and run flows, and draft blocks.
+- One dashboard owns each database (`<db>.owner.json`); the MCP server sends runs to it.
+- Block drafts are checked with `ast` only and approved by a person in the Editor's Pending
+  blocks panel or with `miniflow approve-block`.
+- Follow-up: a conflict check in the Editor's own save.
+
+### V4 milestone 2: Claude in the Editor ✅
+- Ask Claude: streaming conversation, saved-flow context, tool activity, Stop and New chat.
+- Connect Claude: local CLI login/check plus copyable Claude Code and Claude Desktop MCP setup.
+- Standard-library subprocess service uses only MiniFlow MCP tools; bounded conversation and
+  output, isolated process groups, same-origin protection for private chat reads and actions.
+- Uses installed Claude Code credentials. A stored login is not proof the OAuth token is valid;
+  expired authentication directs the person to sign in again. No account credentials exposed.
+- Design approved by the user; themes and 375px layout verified. Installed macOS app rebuilt.
+
+
 ### Phase 4: evaluation (§3.8)
 - Build the benchmarks in a cloud session.
 - **Run the final numbers locally** on the fixed 8-core machine so the speedup and Amdahl comparison is reproducible. Cloud VM core counts vary.

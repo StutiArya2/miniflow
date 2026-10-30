@@ -1,4 +1,7 @@
-"""Validated JSON-flow files and block metadata for the local editor."""
+"""Validated JSON flows and block metadata for the local editor.
+
+Saves can check file versions to detect changes made by another editor.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +9,7 @@ import builtins
 import contextlib
 import csv
 import getpass
+import hashlib
 import io
 import json
 import os
@@ -15,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +30,14 @@ from miniflow.flowtest import run_flow_tests
 from miniflow.signature import config_signature
 from miniflow.ui.templates import TEMPLATES, build_template
 
-__all__ = ["FlowWorkspace", "WorkspaceError", "block_catalog", "block_group", "flow_diff"]
+__all__ = [
+    "FlowWorkspace",
+    "VersionConflict",
+    "WorkspaceError",
+    "block_catalog",
+    "block_group",
+    "flow_diff",
+]
 
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 _VERSION = re.compile(r"\d{8}T\d{6}\d{6}(-\d+)?\Z")
@@ -94,11 +106,57 @@ class WorkspaceError(ValueError):
     """An invalid flow name or document in the editor workspace."""
 
 
+class VersionConflict(WorkspaceError):
+    """The flow file isn't the version the caller read (someone else saved it meanwhile)."""
+
+    def __init__(self, name: str, current: str | None) -> None:
+        if current is None:
+            message = f"flow {name!r} doesn't exist any more"
+        else:
+            message = f"flow {name!r} changed since you read it; read it again and merge"
+        super().__init__(message)
+        self.current = current
+
+
+def _version(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+@contextlib.contextmanager
+def _save_lock(folder: Path) -> Iterator[None]:
+    """Serialize saves across dashboard/MCP processes; the OS releases crash-held locks."""
+    path = folder / ".miniflow-save.lock"
+    if path.is_symlink():
+        raise WorkspaceError("the workspace save lock can't be a symlink")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "r+b") as handle:
+        if os.fstat(handle.fileno()).st_size == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 _GROUPS = {
     "data": "Read & write",
     "transform": "Transform",
     "text": "Text & dates",
-    "office": "Excel",
+    "office": "Excel & Word",
     "web": "Messages, AI & cloud",
     "notify": "Email & utilities",
     "databases": "Databases",
@@ -218,7 +276,7 @@ class FlowWorkspace:
     def templates(self) -> builtins.list[dict[str, str]]:
         return [dict(item) for item in TEMPLATES]
 
-    def create_template(self, template: str, name: str) -> dict[str, Any]:
+    def create_template(self, template: str, name: str, *, message: str = "") -> dict[str, Any]:
         """Create a starter flow and its local sample data without overwriting files."""
         path = self._path(name)
         if path.exists():
@@ -240,7 +298,7 @@ class FlowWorkspace:
                 except FileExistsError:
                     raise WorkspaceError(f"sample data {relative!r} already exists") from None
                 created.append(asset)
-            result = self.save(name, document)
+            result = self.save(name, document, message=message, expect_version=True)
             if not result["valid"]:
                 raise WorkspaceError("template failed validation: " + "; ".join(result["problems"]))
         except BaseException:
@@ -373,14 +431,64 @@ class FlowWorkspace:
         """Make version ``vid`` current again; the replaced version is kept in history."""
         return self.save(name, self.version(name, vid), message=f"restored {vid}")
 
-    def save(self, name: str, document: Any, message: str = "") -> dict[str, Any]:
+    def current(self, name: str) -> dict[str, Any]:
+        """The saved file's version plus who saved it, when and with what message.
+
+        The editor polls this to notice saves made elsewhere (an agent, another tab).
+        ``version`` is None if there is no such file; the other fields are empty when
+        the file was written by hand.
+        """
+        version = self.file_version(name)
+        meta: dict[str, Any] = {}
+        if version is not None:
+            with contextlib.suppress(OSError, ValueError):
+                loaded = json.loads((self._history(name) / "current.meta").read_text("utf-8"))
+                meta = loaded if isinstance(loaded, dict) else {}
+        message = meta.get("message", "")
+        return {
+            "version": version,
+            "saved_at": meta.get("saved_at"),
+            "user": meta.get("user", ""),
+            "message": message if isinstance(message, str) else "",
+        }
+
+    def file_version(self, name: str) -> str | None:
+        """Short hash of the flow file's bytes, or None if there is no such file."""
+        try:
+            return _version(self._path(name).read_bytes())
+        except FileNotFoundError:
+            return None
+
+    def save(
+        self,
+        name: str,
+        document: Any,
+        message: str = "",
+        *,
+        expect_version: bool = False,
+        base_version: str | None = None,
+    ) -> dict[str, Any]:
+        """With expect_version, refuse a save unless file_version matches base_version.
+
+        None means the flow must not exist yet. A mismatch raises VersionConflict.
+        """
         path = self._path(name)
         result = self.validate(name, document)
         if not result["valid"]:
             return result
         data = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        with self._lock:
+        with self._lock, _save_lock(self.folder):
+            path = self._path(name)
             previous = path.read_bytes() if path.is_file() else None
+            if expect_version:
+                current = None if previous is None else _version(previous)
+                if current != base_version:
+                    conflict = VersionConflict(name, current)
+                    if current is not None and base_version is None:
+                        conflict.args = (
+                            f"flow {name!r} already exists; read it and pass its version",
+                        )
+                    raise conflict
             if previous == data:
                 return result
             if previous is not None:

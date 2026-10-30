@@ -226,10 +226,16 @@ def load_plugins(folder: str | Path) -> list[str]:
     for file in sorted(path.glob("*.py")):
         if file.name.startswith("_") or file.stem in sys.modules:
             continue
+        registered = set(_REGISTRY)
         try:
             importlib.import_module(file.stem)
-        except Exception as exc:
+        except BaseException as exc:
+            for name, spec in list(_REGISTRY.items()):
+                if name not in registered and spec.fn.__module__ == file.stem:
+                    del _REGISTRY[name]
             sys.modules.pop(file.stem, None)
+            if not isinstance(exc, Exception):
+                raise
             raise BlockError(
                 f"couldn't load blocks from {file}: {type(exc).__name__}: {exc}"
             ) from exc

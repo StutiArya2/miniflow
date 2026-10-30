@@ -82,6 +82,7 @@ async function studioRestore(version) {
     Studio.flow = await studioApi(`/api/flows/${encodeURIComponent(Studio.name)}`);
     studioCommit();  // undoable in the editor too
     Studio.dirty = false;
+    await studioSyncSaved();
     studioRender();
     await studioLoadVersions();
     studioMessage(`Restored the version from ${when}.`);

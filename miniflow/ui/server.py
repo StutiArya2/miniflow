@@ -7,12 +7,23 @@ Endpoints:
 ``GET /api/runs``                  recent runs with a count of tasks per state
 ``GET /api/runs/<id>``             one run: metadata, graph + layout, task rows, attempt log
 ``GET /api/runs/<id>/events``      Server-Sent Events stream of changes to that run
+``GET /api/runs/<id>/outputs``     files the run's steps wrote (:mod:`miniflow.ui.outputs`)
+``GET /api/runs/<id>/outputs/<step>/preview``  that file as a table, document or text
+``GET /api/runs/<id>/outputs/<step>/file``     the file itself (``?download=1`` to save it)
+``POST /api/runs/<id>/outputs/<step>/open``    ``{}``: open it in the computer's default app
+``GET /api/owner``                 ``{"token": ...}``: proves this server owns its database
+                                   (:mod:`miniflow.ui.owner`)
 ``GET /api/control``               flows the dashboard can start and the active run
 ``POST /api/control/run``          ``{"flow": name, "fail_rate": 0..1}``: start a run
 ``POST /api/control/resume``       ``{"run_id": id, "fail_rate": 0..1}``: resume a run
 ``POST /api/control/partial``      ``{"flow": name, "step": name}``: run through one step
 ``POST /api/control/cancel``       ``{}``: stop the active run
+``GET /api/blocks/drafts``          pending block source, hashes and static checks
+``POST /api/blocks/drafts/approve``  {"name", "sha256"}: approve reviewed code
+``POST /api/blocks/drafts/discard``  {"name", "sha256"}: discard reviewed draft
 ``POST /api/flows/upload-csv``      raw CSV bytes; save in the flow workspace
+``GET /api/flows/<name>/state``     the saved file's version, author and message, so the
+                                   editor can show saves made elsewhere (for example by Claude)
 
 The server reads the SQLite :class:`~miniflow.store.StateStore` that the
 scheduler writes. It works while a run is in progress (in the same process
@@ -32,6 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from dataclasses import asdict
@@ -40,8 +52,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
+from miniflow.agent.chat import ChatError, ClaudeChat
+from miniflow.agent.drafts import DraftError, approve, discard, list_drafts
 from miniflow.custom_blocks import CustomBlockError, CustomBlockLibrary
 from miniflow.flowfile import FlowFileError
 from miniflow.states import State
@@ -49,6 +63,9 @@ from miniflow.store import RunRecord, StateStore
 from miniflow.ui.author import FlowWorkspace, WorkspaceError
 from miniflow.ui.control import ControlError, RunController
 from miniflow.ui.layout import layered_layout
+from miniflow.ui.outputs import OutputError, content_type, find_outputs, open_file, output_path
+from miniflow.ui.outputs import preview as output_preview
+from miniflow.ui.owner import Owner, claim, release
 from miniflow.ui.schedules import ScheduleService
 
 __all__ = ["DashboardServer"]
@@ -58,13 +75,19 @@ log = logging.getLogger("miniflow.ui")
 _STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "outputs.js": "text/javascript; charset=utf-8",
     "charts.js": "text/javascript; charset=utf-8",
+    "editor-drafts.js": "text/javascript; charset=utf-8",
+    "editor-claude.js": "text/javascript; charset=utf-8",
+    "chat-markdown.js": "text/javascript; charset=utf-8",
     "editor.js": "text/javascript; charset=utf-8",
     "editor-history.js": "text/javascript; charset=utf-8",
     "editor-view.js": "text/javascript; charset=utf-8",
     "editor-versions.js": "text/javascript; charset=utf-8",
     "editor-data.js": "text/javascript; charset=utf-8",
     "custom-builder.js": "text/javascript; charset=utf-8",
+    "editor-sync.js": "text/javascript; charset=utf-8",
+    "editor-setup.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _POLL_SECONDS = 0.25
@@ -74,6 +97,7 @@ _MAX_BODY = 4096
 _MAX_DISCARD = 1024 * 1024  # unread request bytes drained before closing
 _MAX_FLOW_BODY = 262144
 _MAX_UPLOAD_BODY = 10 * 1024 * 1024
+_MAX_OUTPUT_FILE = 100 * 1024 * 1024
 _ACTIONS = ("run", "resume", "partial", "cancel")
 
 
@@ -170,6 +194,10 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         log.debug("%s - %s", self.address_string(), format % args)
 
+    def _drafts_enabled(self) -> bool:
+        """Draft review is part of editing: it needs a flows folder and a dashboard that may run."""
+        return self.server.workspace is not None and self.server.allow_run
+
     # ---------------------------------------------------------------- routing
     def do_GET(self) -> None:
         url = urlsplit(self.path)
@@ -181,6 +209,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_bytes(_static(parts[1]), _STATIC[parts[1]])
             elif parts == ["api", "examples"]:
                 self._send_json(self.server.examples_json())
+            elif parts[:2] == ["api", "agent"] and self.server.chat is not None:
+                self._agent_origin()
+                if parts == ["api", "agent", "setup"]:
+                    self._send_json(self.server.chat.setup())
+                elif parts == ["api", "agent", "chat"]:
+                    self._send_json(self.server.chat.snapshot())
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "not found")
+            elif parts == ["api", "blocks", "drafts"] and self._drafts_enabled():
+                assert self.server.workspace is not None
+                self._send_json(list_drafts(self.server.workspace.folder))
             elif parts == ["api", "blocks"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.catalog())
             elif parts == ["api", "custom-blocks"] and self.server.workspace is not None:
@@ -208,6 +247,16 @@ class _Handler(BaseHTTPRequestHandler):
             ):
                 self._versions(parts[2], parts[4] if len(parts) > 4 else None, len(parts) == 6)
             elif (
+                len(parts) == 4
+                and parts[:2] == ["api", "flows"]
+                and parts[3] == "state"
+                and self.server.workspace is not None
+            ):
+                try:
+                    self._send_json(self.server.workspace.current(parts[2]))
+                except WorkspaceError:
+                    self._send_error(HTTPStatus.NOT_FOUND, "flow not found")
+            elif (
                 len(parts) == 3
                 and parts[:2] == ["api", "flows"]
                 and self.server.workspace is not None
@@ -221,6 +270,9 @@ class _Handler(BaseHTTPRequestHandler):
                         HTTPStatus.BAD_REQUEST,
                         f"flow JSON is invalid at line {exc.lineno}, column {exc.colno}",
                     )
+            elif parts == ["api", "owner"]:
+                owner = self.server.owner
+                self._send_json({"token": None if owner is None else owner.token})
             elif parts == ["api", "runs"]:
                 self._send_json(self.server.api.runs())
             elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -229,6 +281,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_error(HTTPStatus.NOT_FOUND, f"no run {parts[2]!r}")
                 else:
                     self._send_json(detail)
+            elif len(parts) in (4, 6) and parts[:2] == ["api", "runs"] and parts[3] == "outputs":
+                self._outputs(parts[2], parts[4:], parse_qs(url.query))
             elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "events":
                 since = float(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 self._stream(parts[2], since)
@@ -241,6 +295,10 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.server.schedule_service.snapshot())
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except (ChatError, ControlError) as exc:
+            self._send_error(exc.status, str(exc))
+        except DraftError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # the browser went away
         except CustomBlockError as exc:
@@ -286,6 +344,39 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         controller = self.server.controller
         try:
+            if (
+                len(parts) == 6
+                and parts[:2] == ["api", "runs"]
+                and parts[3:6:2] == ["outputs", "open"]
+            ):
+                self._control_body()
+                try:
+                    path = output_path(self.server.api.store, parts[2], parts[4])
+                except OutputError as exc:
+                    raise ControlError(str(exc), HTTPStatus.NOT_FOUND) from None
+                open_file(path)
+                self._send_json({"opened": path.name})
+                return
+            if parts[:2] == ["api", "agent"] and self.server.chat is not None:
+                body = self._control_body(_MAX_FLOW_BODY if parts[-1] == "restore" else 65536)
+                chat = self.server.chat
+                if parts == ["api", "agent", "send"]:
+                    self._send_json(
+                        chat.send(_text(body, "message"), body.get("flow", "")), HTTPStatus.ACCEPTED
+                    )
+                elif parts == ["api", "agent", "stop"]:
+                    chat.stop(_text(body, "turn"))
+                    self._send_json(chat.snapshot())
+                elif parts == ["api", "agent", "clear"]:
+                    self._send_json(chat.clear())
+                elif parts == ["api", "agent", "restore"]:
+                    self._send_json(chat.restore(body.get("messages")))
+                elif parts == ["api", "agent", "login"]:
+                    chat.login()
+                    self._send_json({"started": True}, HTTPStatus.ACCEPTED)
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "not found")
+                return
             if len(parts) == 4 and parts[:2] == ["api", "hooks"]:
                 self._hook(parts[2], parts[3])
                 return
@@ -331,6 +422,23 @@ class _Handler(BaseHTTPRequestHandler):
                     path = self.server.workspace.folder / "_custom_test.json"
                     self._send_json(run_flow_tests(path, document))
                     return
+            if (
+                len(parts) == 4
+                and parts[:3] == ["api", "blocks", "drafts"]
+                and parts[3] in ("approve", "discard")
+                and self._drafts_enabled()
+            ):
+                assert self.server.workspace is not None
+                body = self._control_body()
+                name, digest = _text(body, "name"), _text(body, "sha256")
+                folder = self.server.workspace.folder
+                if parts[3] == "approve":
+                    added = approve(folder, name, digest)
+                    self._send_json({"added": added, "blocks": self.server.workspace.catalog()})
+                else:
+                    discard(folder, name, digest)
+                    self._send_json({"discarded": name})
+                return
             if parts == ["api", "flows", "template"] and self.server.workspace is not None:
                 body = self._control_body()
                 name = _text(body, "name")
@@ -430,6 +538,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(controller.status())
         except ControlError as exc:
             self._send_error(exc.status, str(exc))
+        except DraftError as exc:
+            reply: dict[str, Any] = {"error": str(exc)}
+            if exc.report is not None:
+                reply["checks"] = exc.report["checks"]
+            self._send_json(reply, HTTPStatus.CONFLICT)
+        except ChatError as exc:
+            self._send_error(exc.status, str(exc))
         except WorkspaceError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except CustomBlockError as exc:
@@ -447,6 +562,15 @@ class _Handler(BaseHTTPRequestHandler):
             and (origin is None or origin.lower() in {f"http://{h}" for h in hosts})
             and self.headers.get("X-MiniFlow-Action") == "run"
         )
+
+    def _agent_origin(self) -> None:
+        """Chat contains private conversation text; guard reads as well as writes."""
+        hosts = self.server.hosts
+        if self.headers.get("Host", "").lower() not in hosts:
+            raise ControlError("unexpected Host header", HTTPStatus.FORBIDDEN)
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {f"http://{h}" for h in hosts}:
+            raise ControlError("requests from other sites are not allowed", HTTPStatus.FORBIDDEN)
 
     def _control_body(self, limit: int = _MAX_BODY) -> dict[str, Any]:
         """Refuse requests that didn't come from the dashboard page, then parse the body."""
@@ -516,6 +640,42 @@ class _Handler(BaseHTTPRequestHandler):
         token = token or self.headers.get("X-MiniFlow-Token", "").strip()
         state = service.fire_webhook(flow, name, token, body)
         self._send_json({"status": state}, HTTPStatus.ACCEPTED)
+
+    def _outputs(self, run_id: str, rest: list[str], query: dict[str, list[str]]) -> None:
+        """Output files are private data: refuse pages from other sites (as chat does)."""
+        self._agent_origin()
+        store = self.server.api.store
+        if not rest:
+            self._send_json(find_outputs(store, run_id))
+            return
+        task, what = rest
+        try:
+            path = output_path(store, run_id, task)
+            if what == "preview":
+                self._send_json({"name": path.name, "path": str(path), **output_preview(path)})
+            elif what == "file":
+                size = path.stat().st_size
+                if size > _MAX_OUTPUT_FILE:
+                    raise OutputError(f"{path.name} is too large to show; open it instead")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type(path))
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                # an SVG or HTML file opened directly must not run scripts as this page
+                # (a PDF is drawn by the browser's own viewer, which a sandbox would block)
+                if path.suffix.lower() != ".pdf":
+                    self.send_header("Content-Security-Policy", "sandbox")
+                disposition = "attachment" if query.get("download") else "inline"
+                quoted = quote(path.name)
+                self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quoted}")
+                self.end_headers()
+                with path.open("rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            else:
+                self._send_error(HTTPStatus.NOT_FOUND, "not found")
+        except OutputError as exc:
+            self._send_error(HTTPStatus.NOT_FOUND, str(exc))
 
     def _versions(self, name: str, vid: str | None, diff: bool) -> None:
         workspace = self.server.workspace
@@ -640,6 +800,11 @@ class DashboardServer(ThreadingHTTPServer):
         self.api = _Api(self.store)
         try:
             self.workspace = None if flows is None else FlowWorkspace(flows)
+            self.chat = (
+                ClaudeChat(self.workspace.folder, Path(self.store.path))
+                if self.workspace is not None and allow_run
+                else None
+            )
             self.controller = (
                 None
                 if flows is None
@@ -659,6 +824,7 @@ class DashboardServer(ThreadingHTTPServer):
         except OSError:
             self.store.close()
             raise
+        self.owner: Owner | None = None
         self.stopping = threading.Event()
         self._thread: threading.Thread | None = None
         last_error: OSError | None = None
@@ -699,15 +865,27 @@ class DashboardServer(ThreadingHTTPServer):
             name="miniflow-ui",
         )
         self._thread.start()
+        if self.controller is not None and self.workspace is not None:
+            # Claimed only once serving, so another process checking the file gets an answer.
+            try:
+                self.owner = claim(self.store.path, self.url, self.workspace.folder)
+            except BaseException:
+                self.stop()
+                raise
         if self.schedule_service is not None:
             self.schedule_service.start()
         return self
 
     def stop(self) -> None:
+        if self.chat is not None:
+            self.chat.shutdown()
         if self.schedule_service is not None:
             self.schedule_service.stop()
         if self.controller is not None:
             self.controller.shutdown()
+        if self.owner is not None:
+            release(self.store.path, self.owner)
+            self.owner = None
         self.stopping.set()
         if self._thread is not None:
             self.shutdown()
