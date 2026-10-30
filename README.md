@@ -80,13 +80,18 @@ on the same scheduler, so retries, resume and the dashboard work the same way.
 - **Placeholders** fill settings in when the step runs: `{{ step }}` (a step's result, which
   also makes this step wait for it), `{{ step.field.0 }}`, `{{ rows.count }}`,
   `{{ params.name }}` and `{{ env.NAME }}` (secrets come only from environment variables).
-- **28 built-in blocks**, listed by `miniflow blocks` (`miniflow blocks filter` describes one):
+- **29 built-in blocks**, listed by `miniflow blocks` (`miniflow blocks filter` describes one):
   - data: `http_request`, `read_csv`, `write_csv`, `read_json`, `write_json`
   - transform: `filter`, `select`, `aggregate`, `sort`
   - systems and notify: `shell`, `sql`, `email`, `log`, `wait`
   - alerts, AI and cloud: `webhook`, `slack_message`, `teams_message`, `llm_prompt` (Anthropic or
     any OpenAI-compatible API), `s3_get`, `s3_put` (AWS or MinIO-style servers). Webhook URLs, API
     keys and cloud credentials must come from `{{ env.NAME }}`.
+  - AI over rows: `llm_map` asks a model about every row and adds the answer as a column
+    (`anthropic`, `openai`, or `simulated`, an offline stand-in that needs no key). With
+    `"reuse": "exact"` identical rows reuse earlier answers; with `"tolerant"` near matches
+    may too, where checks showed the difference doesn't change what the next AI step
+    decides (see `docs/llm-reuse.md` and `examples/ticket_triage.json`).
   - Excel: `read_xlsx`, `write_xlsx` (plain data sheets, no outside library)
   - dates and text: `date_format`, `date_add`, `date_diff` (a single value, or a field of every
     row) and `text_template` (turn rows into an email or chat message)

@@ -1,0 +1,51 @@
+{
+  "description": "Summarise and label support tickets with an AI model, reusing earlier answers only where history shows it doesn't change the outcome",
+  "params": {
+    "provider": {"type": "str", "default": "simulated", "help": "simulated (offline, no key), anthropic or openai; for a real model also add \"api_key\": \"{{ env.ANTHROPIC_API_KEY }}\" to both AI steps"},
+    "reuse": {"type": "str", "default": "tolerant", "help": "off, exact or tolerant"}
+  },
+  "steps": {
+    "tickets": {
+      "block": "read_csv",
+      "settings": {"path": "data/tickets.csv"},
+      "note": "30 support tickets: id and text"
+    },
+    "summarise": {
+      "block": "llm_map",
+      "settings": {
+        "rows": "{{ tickets }}",
+        "prompt": "Summarise this support ticket in one sentence:\n{text}",
+        "field": "summary",
+        "provider": "{{ params.provider }}",
+        "reuse": "{{ params.reuse }}",
+        "key": "id"
+      },
+      "note": "Free text: its tolerant reuse is judged by whether 'classify' changes its label"
+    },
+    "classify": {
+      "block": "llm_map",
+      "settings": {
+        "rows": "{{ summarise }}",
+        "prompt": "Which kind of request is this support ticket?\n{summary}",
+        "field": "label",
+        "choices": ["billing", "bug", "feature"],
+        "provider": "{{ params.provider }}",
+        "reuse": "{{ params.reuse }}",
+        "key": "id"
+      }
+    },
+    "by_label": {
+      "block": "aggregate",
+      "settings": {"rows": "{{ classify }}", "group_by": "label", "metrics": {"tickets": "count"}}
+    },
+    "save": {
+      "block": "write_csv",
+      "settings": {"rows": "{{ classify }}", "path": "out/triaged_tickets.csv"}
+    },
+    "report": {
+      "block": "log",
+      "after": ["save"],
+      "settings": {"message": "{{ classify.count }} tickets labelled; {{ by_label.count }} kinds of request"}
+    }
+  }
+}
