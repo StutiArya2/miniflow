@@ -27,6 +27,7 @@ nav:
       - Retry: api/retry.md
       - Store: api/store.md
       - Scheduler: api/scheduler.md
+      - Failure-aware priority: api/priority.md
       - Dashboard: api/ui.md
       - Flow files: api/flowfile.md
       - Blocks: api/blocks.md

@@ -237,3 +237,33 @@ def fault_tolerance(rows: list[dict[str, Any]], out: Path) -> list[Path]:
     ax.margins(x=0.12)
     paths.append(_save(fig, out / "e4_fault_attempts.png"))
     return paths
+
+
+def failure_aware(rows: list[dict[str, Any]], out: Path) -> Path:
+    """Worker time per failed run, and successful-run wall time, relative to the default."""
+    workloads = list(dict.fromkeys(r["workload"] for r in rows))
+    policies = list(dict.fromkeys(r["policy"] for r in rows))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.4), sharey=True)
+    panels = [
+        ("failed_worker_s_vs_default", "worker time per failed run"),
+        ("ok_wall_s_vs_default", "wall time per successful run"),
+    ]
+    width = 0.8 / len(policies)
+    for ax, (key, title) in zip(axes, panels, strict=True):
+        for i, (colour, pol) in enumerate(zip([*SERIES, INK_2], policies, strict=False)):
+            ys = [
+                next(r[key] for r in rows if r["workload"] == w and r["policy"] == pol)
+                for w in workloads
+            ]
+            xs = [j + (i - (len(policies) - 1) / 2) * width for j in range(len(workloads))]
+            ax.bar(xs, ys, width=width, color=colour, label=pol)
+        ax.axhline(1.0, color="#999891", linewidth=1, linestyle=(0, (4, 2)))
+        ax.set_xticks(range(len(workloads)), workloads)
+        ax.set_title(title)
+    axes[0].set_ylabel("relative to critical path (default) = 1")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels), bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.88))
+    fig.savefig(out / "e6_failure_aware.png", dpi=160)
+    plt.close(fig)
+    return out / "e6_failure_aware.png"

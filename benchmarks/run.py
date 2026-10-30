@@ -30,6 +30,8 @@ EXPERIMENTS: dict[str, tuple[str, Callable[[X.Config, X.Correctness], list[dict[
     "e2": ("worker_choice", X.worker_choice),
     "e3": ("overhead", X.overhead),
     "e4": ("fault_tolerance", X.fault_tolerance),
+    "e6": ("failure_aware", X.failure_aware),
+    "e7": ("salvage", X.salvage_cycle),
     "e8": ("llm_reuse", llm_reuse.tolerant_reuse),
 }
 
@@ -187,6 +189,64 @@ def summary(
             "![Attempts](e4_fault_attempts.png)" if "e4_fault_attempts.png" in figures else "",
             "",
         ]
+    if "e6" in results:
+        out += [
+            "## 6. Failure-aware priority and pruning",
+            "",
+            "Cheap, flaky steps (35 % of attempts fail, one retry) sit among reliable, more "
+            "expensive ones. *failure-aware* starts a ready step early when its learned "
+            "failure risk times the work its failure would make useless exceeds the delay "
+            "it causes; *prune* skips waiting steps whose results can no longer reach any "
+            "sink. History comes from separate training runs; faults are deterministic per "
+            "seed, so every policy sees the same failed runs. *Useless work*: worker time "
+            "on steps whose results nothing in the run could use. Ratios are against the "
+            "default.",
+            "",
+            _table(
+                results["e6"],
+                [
+                    ("workload", "workload"),
+                    ("policy", "policy"),
+                    ("run_success_rate", "runs succeeded"),
+                    ("failed_worker_s", "worker s / failed run"),
+                    ("failed_worker_s_vs_default", "×"),
+                    ("useless_worker_s", "useless worker s"),
+                    ("time_to_first_failure_s", "first failure (s)"),
+                    ("failed_wall_s", "failed run wall (s)"),
+                    ("ok_wall_s", "successful run wall (s)"),
+                    ("ok_wall_s_vs_default", "×"),
+                ],
+            ),
+            "",
+            "![Failure-aware](e6_failure_aware.png)" if "e6_failure_aware.png" in figures else "",
+            "",
+        ]
+    if "e7" in results:
+        out += [
+            "## 7. Failure and resume: reuse-aware salvage",
+            "",
+            "The gated-join workload, counting a failed run plus what follows it. *Resumed*: "
+            "failures are transient and every failed run is resumed after the fix. *Abandoned*: "
+            "failed runs are never resumed. Each regime's policies learn from training runs "
+            "of that regime. *salvage* keeps doomed steps whose results were usually reused "
+            "after a failure, running them after the live work, and prunes the rest.",
+            "",
+            _table(
+                results["e7"],
+                [
+                    ("regime", "regime"),
+                    ("policy", "policy"),
+                    ("doomed_tasks_run", "doomed steps run"),
+                    ("failed_worker_s", "failed run worker s"),
+                    ("failed_wall_s", "failed run wall (s)"),
+                    ("resume_wall_s", "resume wall (s)"),
+                    ("cycle_worker_s", "total worker s"),
+                    ("cycle_worker_s_vs_default", "×"),
+                    ("cycle_wall_s", "total wall (s)"),
+                ],
+            ),
+            "",
+        ]
     if "e8" in results:
         out += [
             "## 8. Reusing LLM answers across daily runs",
@@ -220,7 +280,8 @@ def summary(
         f"Every MiniFlow run above was checked against the state store: **{c['runs_checked']} "
         f"runs, {c['attempts_checked']} attempts, {c['violations']} violations.** "
         "No attempt started before all of its upstream tasks had finished, every SKIPPED task "
-        "had a FAILED ancestor, and every FAILED task used exactly its retry budget.",
+        "had a FAILED ancestor (or, when pruned in experiment 6, only skipped or failed "
+        "consumers), and every FAILED task used exactly its retry budget.",
         "",
     ]
     return "\n".join(line for line in out) + "\n"
@@ -267,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
                 "e2": plots.worker_choice,
                 "e3": plots.overhead,
                 "e4": plots.fault_tolerance,
+                "e6": plots.failure_aware,
             }
             for key, rows in results.items():
                 if key in makers and rows:
