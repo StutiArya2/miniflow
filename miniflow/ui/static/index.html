@@ -21,6 +21,7 @@
       <button type="button" id="view-examples" class="tab" aria-current="page" title="Real-world example pipelines you can run"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>Examples</button>
       <button type="button" id="view-runs" class="tab" title="Run history and the live view of a run"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h3l2-5 2 10 2-5h3"/></svg>Runs</button>
       <button type="button" id="view-editor" class="tab" title="Build and edit flows visually" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="12" r="2"/><path d="M6 4h3a3 3 0 0 1 3 3v3"/></svg>Editor</button>
+      <button type="button" id="view-custom" class="tab" title="Create reusable custom blocks" hidden>Custom blocks</button>
     </nav>
     <div class="side-section">
       <div class="side-title">Recent runs</div>
@@ -83,6 +84,9 @@
           <label class="sr-only" for="studio-search">Search blocks</label>
           <input id="studio-search" placeholder="Search blocks…" autocomplete="off">
           <div id="studio-blocks" class="studio-blocks"></div>
+          <h3>Custom blocks</h3>
+          <button type="button" id="studio-custom-create" class="btn">Create custom block</button>
+          <div id="studio-custom-blocks" class="studio-blocks"></div>
           <h3>Reusable flows</h3>
           <div id="studio-subflows" class="studio-blocks"></div>
         </aside>
@@ -156,6 +160,37 @@
         </section>
       </div>
       </dialog>
+    </section>
+    <section id="custom-builder" class="custom-builder" hidden aria-label="Custom block builder">
+      <div class="panel custom-head">
+        <div><h1>Custom blocks</h1><p class="hint">Build once, use in every workspace on this computer.</p></div>
+        <label>Saved blocks <select id="custom-list"><option value="">New block…</option></select></label>
+        <button type="button" id="custom-new" class="btn">New</button>
+        <button type="button" id="custom-validate" class="btn">Validate</button>
+        <button type="button" id="custom-save" class="btn primary">Save block</button>
+      </div>
+      <div class="custom-meta panel">
+        <label>Block name <input id="custom-name" placeholder="clean_orders" pattern="[A-Za-z_][A-Za-z0-9_]*"></label>
+        <label>Description <input id="custom-description" placeholder="What this block does"></label>
+        <label>Build method <select id="custom-kind"><option value="visual">No-code canvas</option><option value="python">Python code</option></select></label>
+      </div>
+      <div class="custom-columns">
+        <aside class="panel custom-inputs"><h2>Inputs</h2><p class="hint">Values shown as settings when the block is used.</p><div id="custom-inputs"></div><button type="button" id="custom-add-input" class="btn">Add input</button></aside>
+        <div class="custom-work panel">
+          <div id="custom-visual">
+            <div class="custom-tools"><h2>Block canvas</h2><label>Add built-in block <select id="custom-add-type"></select></label><button type="button" id="custom-add-step" class="btn">Add to canvas</button></div>
+            <div id="custom-canvas" class="custom-canvas" aria-label="Custom block canvas"></div>
+            <div id="custom-step-settings" class="custom-step-settings"></div>
+          </div>
+          <div id="custom-python" hidden>
+            <h2>Python function body</h2><p class="hint">Write the statements inside the function. Input names are Python variables. Return an object with the named outputs. This code runs locally with your user permissions.</p>
+            <label>Runs on <select id="custom-execution"><option value="io">Thread (files or network)</option><option value="cpu">Process (heavy calculation)</option></select></label>
+            <textarea id="custom-code" spellcheck="false" placeholder="return {'result': text.upper()}"></textarea>
+          </div>
+        </div>
+        <aside class="panel custom-outputs"><h2>Outputs</h2><p id="custom-output-hint" class="hint">Use a step result such as {{ filter }} for a no-code output.</p><div id="custom-outputs"></div><button type="button" id="custom-add-output" class="btn">Add output</button></aside>
+      </div>
+      <div class="panel custom-test"><h2>Test saved block</h2><label>Input settings (JSON) <textarea id="custom-test-settings" spellcheck="false">{}</textarea></label><label>Expected output (JSON) <textarea id="custom-test-expected" spellcheck="false">{}</textarea></label><button type="button" id="custom-test" class="btn">Run test</button><p id="custom-message" role="status" class="hint"></p></div>
     </section>
     <section class="panel view-runs" id="schedules-panel" aria-labelledby="schedules-title" hidden>
       <div class="panel-head"><h2 id="schedules-title">Schedules</h2><p class="hint">Local laptop time</p></div>
@@ -328,6 +363,7 @@
   <script src="/static/editor-view.js"></script>
   <script src="/static/editor-versions.js"></script>
   <script src="/static/editor-data.js"></script>
+  <script src="/static/custom-builder.js"></script>
   <script src="/static/editor-setup.js"></script>
   <script src="/static/editor-sync.js"></script>
   <script src="/static/editor-drafts.js"></script>

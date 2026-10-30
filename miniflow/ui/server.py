@@ -56,6 +56,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from miniflow.agent.chat import ChatError, ClaudeChat
 from miniflow.agent.drafts import DraftError, approve, discard, list_drafts
+from miniflow.custom_blocks import CustomBlockError, CustomBlockLibrary
 from miniflow.flowfile import FlowFileError
 from miniflow.states import State
 from miniflow.store import RunRecord, StateStore
@@ -84,6 +85,7 @@ _STATIC = {
     "editor-view.js": "text/javascript; charset=utf-8",
     "editor-versions.js": "text/javascript; charset=utf-8",
     "editor-data.js": "text/javascript; charset=utf-8",
+    "custom-builder.js": "text/javascript; charset=utf-8",
     "editor-sync.js": "text/javascript; charset=utf-8",
     "editor-setup.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
@@ -220,6 +222,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(list_drafts(self.server.workspace.folder))
             elif parts == ["api", "blocks"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.catalog())
+            elif parts == ["api", "custom-blocks"] and self.server.workspace is not None:
+                self._send_json(self.server.custom_blocks.catalog())
+            elif (
+                len(parts) == 3
+                and parts[:2] == ["api", "custom-blocks"]
+                and self.server.workspace is not None
+            ):
+                self._send_json(self.server.custom_blocks.get(parts[2]))
             elif parts == ["api", "environments"] and self.server.workspace is not None:
                 self._send_json(self.server.workspace.environments())
             elif parts == ["api", "subflows"] and self.server.workspace is not None:
@@ -291,6 +301,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # the browser went away
+        except CustomBlockError as exc:
+            self._send_error(HTTPStatus.NOT_FOUND, str(exc))
 
     def do_POST(self) -> None:
         self.close_connection = True
@@ -371,6 +383,45 @@ class _Handler(BaseHTTPRequestHandler):
             if parts == ["api", "flows", "upload-csv"] and self.server.workspace is not None:
                 self._upload_csv()
                 return
+            if (
+                parts[:2] == ["api", "custom-blocks"]
+                and len(parts) == 3
+                and self.server.workspace is not None
+            ):
+                body = self._control_body(_MAX_FLOW_BODY)
+                if parts[2] == "validate":
+                    self._send_json(
+                        {
+                            "valid": True,
+                            "definition": self.server.custom_blocks.validate(
+                                body.get("definition")
+                            ),
+                        }
+                    )
+                    return
+                if parts[2] == "save":
+                    expected = body.get("expected_revision")
+                    if expected is not None and not isinstance(expected, str):
+                        raise CustomBlockError("expected_revision must be text")
+                    self._send_json(
+                        self.server.custom_blocks.save(body.get("definition"), expected),
+                        HTTPStatus.CREATED,
+                    )
+                    return
+                if parts[2] == "test":
+                    name = _text(body, "name")
+                    settings = body.get("settings", {})
+                    if not isinstance(settings, dict):
+                        raise CustomBlockError("test settings must be an object")
+                    from miniflow.flowtest import run_flow_tests
+
+                    document = {
+                        "steps": {"sample": {"custom_block": name, "settings": settings}},
+                        "tests": [{"name": "sample", "expect": {"sample": body.get("expected")}}],
+                    }
+                    path = self.server.workspace.folder / "_custom_test.json"
+                    self._send_json(run_flow_tests(path, document))
+                    return
             if (
                 len(parts) == 4
                 and parts[:3] == ["api", "blocks", "drafts"]
@@ -495,6 +546,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ChatError as exc:
             self._send_error(exc.status, str(exc))
         except WorkspaceError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+        except CustomBlockError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except FlowFileError as exc:
             self._send_json({"problems": exc.problems}, HTTPStatus.BAD_REQUEST)
@@ -741,6 +794,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.offline = offline
         self.runner = _ExampleRunner(str(db), offline)
         self.catalog = catalog()
+        self.custom_blocks = CustomBlockLibrary()
         self.example_names = {ex["name"] for ex in self.catalog}
         self.store = StateStore(db)
         self.api = _Api(self.store)
