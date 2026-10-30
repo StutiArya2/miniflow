@@ -23,12 +23,14 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks import experiments as X
+from benchmarks import llm_reuse
 
 EXPERIMENTS: dict[str, tuple[str, Callable[[X.Config, X.Correctness], list[dict[str, Any]]]]] = {
     "e1": ("speedup", X.speedup),
     "e2": ("worker_choice", X.worker_choice),
     "e3": ("overhead", X.overhead),
     "e4": ("fault_tolerance", X.fault_tolerance),
+    "e8": ("llm_reuse", llm_reuse.tolerant_reuse),
 }
 
 
@@ -183,6 +185,32 @@ def summary(
             "![Fault tolerance](e4_fault_success.png)" if "e4_fault_success.png" in figures else "",
             "",
             "![Attempts](e4_fault_attempts.png)" if "e4_fault_attempts.png" in figures else "",
+            "",
+        ]
+    if "e8" in results:
+        out += [
+            "## 8. Reusing LLM answers across daily runs",
+            "",
+            "A ticket-triage flow (summarise, then label the summary) runs daily on the "
+            "offline simulated model while tickets arrive and change. *learned, "
+            "downstream-verified* reuses a near match only in similarity bands where checks "
+            "showed the label changes no more often than when the model is simply asked "
+            "again (95 % upper bound). *self-verified* judges the summary step by its own "
+            "text instead, as verified semantic caches do. Days 1 onward, averaged over "
+            "seeds.",
+            "",
+            _table(
+                results["e8"],
+                [
+                    ("workload", "workload"),
+                    ("policy", "policy"),
+                    ("calls_per_day", "model calls / day"),
+                    ("calls_vs_no_reuse", "× no reuse"),
+                    ("tolerant_per_day", "near-match reuses / day"),
+                    ("checks_per_day", "checks / day"),
+                    ("label_error", "wrong labels"),
+                ],
+            ),
             "",
         ]
     c = results["e5"][0]

@@ -83,3 +83,15 @@ def test_run_writes_csvs_and_summary(tmp_path):
     text = (out / "results.md").read_text(encoding="utf-8")
     assert "## 5. Correctness" in text
     assert "0 violations" in text
+
+
+def test_llm_reuse_experiment_runs_quickly():
+    from benchmarks import llm_reuse
+
+    rows = llm_reuse.tolerant_reuse(X.Config.quick(), X.Correctness())
+    assert {r["policy"] for r in rows} == set(llm_reuse.POLICIES)
+    assert {r["workload"] for r in rows} == set(llm_reuse.WORKLOADS)
+    no_reuse = [r for r in rows if r["policy"] == "no reuse"]
+    assert all(r["calls_vs_no_reuse"] == 1.0 for r in no_reuse)
+    exact = [r for r in rows if r["policy"] == "exact"]
+    assert all(r["calls_vs_no_reuse"] < 1.0 for r in exact)

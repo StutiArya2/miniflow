@@ -73,6 +73,42 @@ Each attempt of every task fails with probability p. A run succeeds only if all 
 
 ![Attempts](e4_fault_attempts.png)
 
+## 8. Reusing LLM answers across daily runs
+
+Run separately with `python -m benchmarks.run --only e8` on 2026-10-30 · Linux, 2 logical CPUs · 200 tickets, 15 days, 3 seeds per policy · simulated model (offline), so the numbers show the mechanism's behaviour, not a real model's.
+
+A ticket-triage flow (summarise, then label the summary) runs daily on the offline simulated model while tickets arrive and change. *learned, downstream-verified* reuses a near match only in similarity bands where checks showed the label changes no more often than when the model is simply asked again (95 % upper bound). *self-verified* judges the summary step by its own text instead, as verified semantic caches do. Days 1 onward, averaged over seeds.
+
+| workload | policy | model calls / day | × no reuse | near-match reuses / day | checks / day | wrong labels |
+|---|---|---|---|---|---|---|
+| small edits | no reuse | 400 | 1 | 0 | 0 | 0.0367 |
+| small edits | exact | 99.7 | 0.249 | 0 | 0 | 0.0331 |
+| small edits | fixed threshold 0.8 | 39.5 | 0.0988 | 49.2 | 0 | 0.116 |
+| small edits | fixed threshold 0.95 | 61.4 | 0.153 | 29.8 | 0 | 0.0313 |
+| small edits | learned, self-verified | 101 | 0.252 | 5.26 | 57.7 | 0.044 |
+| small edits | learned, downstream-verified | 91.3 | 0.228 | 11.3 | 49.3 | 0.0315 |
+| note edits | no reuse | 400 | 1 | 0 | 0 | 0.0289 |
+| note edits | exact | 94.5 | 0.236 | 0 | 0 | 0.0331 |
+| note edits | fixed threshold 0.8 | 37.2 | 0.0931 | 56 | 0 | 0.124 |
+| note edits | fixed threshold 0.95 | 86.9 | 0.217 | 7.48 | 0 | 0.0317 |
+| note edits | learned, self-verified | 85.7 | 0.214 | 14.7 | 47.9 | 0.0545 |
+| note edits | learned, downstream-verified | 81.8 | 0.205 | 18.7 | 44 | 0.0502 |
+
+What this shows:
+
+- **Judging the summary by its downstream effect is what makes it reusable.** Judged by its
+  own text (*self-verified*), a reworded summary always looks changed, so the summary step
+  almost never reuses: 101 calls a day, no better than exact caching. Judged by whether the
+  label changes, it reuses 2–4× as many near matches and needs 9–13 % fewer calls than
+  exact caching, with as many wrong labels on small edits (3.2 % vs 3.3 %).
+- **Fixed thresholds depend on the workload.** 0.8 reuses the most but gets 12 % of labels
+  wrong in both workloads. 0.95 is the best policy on small edits (61 calls, 3.1 %) but
+  saves little on note edits (87 calls), where harmless edits are less similar.
+- **The learned policy pays for its checks.** About 45–50 checks a day, each a model call,
+  keep it from matching the best fixed threshold on small edits. On note edits, where
+  harmless and meaningful edits have the same similarity, its errors rise to 5.0 % (exact:
+  3.3 %): a near-match answer that is wrong stays wrong until the ticket changes again.
+
 ## 5. Correctness
 
 Every MiniFlow run above was checked against the state store: **440 runs, 63083 attempts, 0 violations.** No attempt started before all of its upstream tasks had finished, every SKIPPED task had a FAILED ancestor, and every FAILED task used exactly its retry budget.

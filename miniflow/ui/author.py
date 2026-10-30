@@ -99,6 +99,7 @@ _GROUPS = {
     "text": "Text & dates",
     "office": "Excel",
     "web": "Messages, AI & cloud",
+    "llm": "Messages, AI & cloud",
     "notify": "Email & utilities",
     "databases": "Databases",
     "systems": "System",

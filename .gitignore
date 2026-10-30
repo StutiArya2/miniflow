@@ -32,3 +32,4 @@ miniflow_reports/
 
 # editor version history (local)
 .history/
+.miniflow/
