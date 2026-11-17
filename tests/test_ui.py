@@ -472,15 +472,18 @@ def test_ui_command_with_missing_flows_folder(tmp_path, capsys):
 
 def test_a_client_that_hangs_up_is_not_reported_as_an_error(server, capsys):
     import socket
+    import struct
+    import sys
 
     host, port = server.server_address[:2]
+    # Linger on, zero timeout: close() resets the connection instead of draining it.
+    # The struct is two shorts on Windows and two ints elsewhere.
+    linger = struct.pack("hh" if sys.platform == "win32" else "ii", 1, 0)
     # A malformed request line makes the base handler reply by itself, outside the
     # handler methods; closing straight away turns that reply into a broken pipe.
     for _ in range(20):
         with socket.create_connection((host, port)) as sock:
-            sock.setsockopt(
-                socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00"
-            )
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
             sock.sendall(b"NOT A REQUEST LINE AT ALL " + b"x" * 200 + b"\r\n\r\n")
     assert get(server, "/api/runs")[0] == 200  # still serving
     assert "Traceback" not in capsys.readouterr().err
