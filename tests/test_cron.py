@@ -116,3 +116,22 @@ def test_a_schedule_needs_exactly_one_kind_of_timing():
     )
     assert len(problems) == 3
     assert all("exactly one" in p for p in problems)
+
+
+@pytest.mark.parametrize(
+    ("expr", "now", "expected"),
+    [
+        # A step on a day field narrows the days; it used to be read as plain "*".
+        ("0 9 */2 * *", at(2026, 11, 1, 10, 0), (2026, 11, 3, 9, 0)),
+        ("0 9 */2 * *", at(2026, 11, 3, 10, 0), (2026, 11, 5, 9, 0)),
+        ("0 9 */2 * *", at(2026, 11, 29, 10, 0), (2026, 12, 1, 9, 0)),  # restarts each month
+        ("0 9 * * */2", at(2026, 11, 1, 10, 0), (2026, 11, 3, 9, 0)),  # Sun -> Tue
+        ("0 9 * * */2", at(2026, 11, 7, 10, 0), (2026, 11, 8, 9, 0)),  # Sat -> Sun
+        # With "*" in front, both fields must match: the 1st, 11th, 21st or 31st, on a Monday.
+        ("0 9 */10 * 1", at(2026, 11, 1, 10, 0), (2026, 12, 21, 9, 0)),
+        # "*/1" is still every day.
+        ("0 9 */1 * */1", at(2026, 11, 1, 10, 0), (2026, 11, 2, 9, 0)),
+    ],
+)
+def test_steps_on_day_fields_are_honoured(expr, now, expected):
+    assert when(parse_cron(expr).next_after(now)) == expected

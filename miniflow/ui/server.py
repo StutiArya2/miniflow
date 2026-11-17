@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
 from dataclasses import asdict
@@ -771,6 +772,19 @@ class DashboardServer(ThreadingHTTPServer):
 
     daemon_threads = True
     allow_reuse_address = False
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Stay quiet when the browser simply went away.
+
+        A tab closed mid-response, or a request cut off before its first line, is
+        normal for a dashboard that streams and polls. The handler methods already
+        ignore it, but the base class also replies from outside them (a malformed
+        request line, for one) and printed a full traceback for each.
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, BrokenPipeError | ConnectionResetError | ConnectionAbortedError):
+            return
+        super().handle_error(request, client_address)
 
     def __init__(
         self,
