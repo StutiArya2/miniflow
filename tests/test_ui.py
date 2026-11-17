@@ -468,3 +468,30 @@ def test_ui_command_with_missing_flows_folder(tmp_path, capsys):
     args = ["ui", "--db", str(tmp_path / "c.db"), "--flows", str(tmp_path / "nope")]
     assert main([*args, "--no-browser", "--port", "0"]) == 2
     assert "nope" in capsys.readouterr().err
+
+
+def test_a_client_that_hangs_up_is_not_reported_as_an_error(server, capsys):
+    import socket
+
+    host, port = server.server_address[:2]
+    # A malformed request line makes the base handler reply by itself, outside the
+    # handler methods; closing straight away turns that reply into a broken pipe.
+    for _ in range(20):
+        with socket.create_connection((host, port)) as sock:
+            sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00"
+            )
+            sock.sendall(b"NOT A REQUEST LINE AT ALL " + b"x" * 200 + b"\r\n\r\n")
+    assert get(server, "/api/runs")[0] == 200  # still serving
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_real_handler_error_is_still_reported(server, capsys, monkeypatch):
+    def boom() -> None:
+        raise RuntimeError("deliberate")
+
+    try:
+        boom()
+    except RuntimeError:
+        server.handle_error(None, ("127.0.0.1", 0))
+    assert "deliberate" in capsys.readouterr().err

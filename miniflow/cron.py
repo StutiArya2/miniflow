@@ -8,7 +8,9 @@ A five-field expression in the laptop's local time::
 Each field takes ``*``, a number, a range (``9-17``), a list (``1,15``) and steps
 (``*/15``, ``10-50/20``). Months and weekdays can be written as names
 (``jan-mar``, ``mon-fri``). As in classic cron, when both day-of-month and
-day-of-week are restricted a day matches if *either* does. The shortcuts ``@hourly``,
+day-of-week are restricted a day matches if *either* does; a field that starts with
+``*`` (including ``*/2``) is not "restricted" in that sense, so ``0 9 */2 * 1`` means
+the odd-numbered days that are also Mondays. The shortcuts ``@hourly``,
 ``@daily``, ``@weekly``, ``@monthly`` and ``@yearly`` are accepted.
 
 :func:`parse_cron` reports mistakes in plain words (:class:`CronError`);
@@ -49,20 +51,19 @@ class CronExpr:
     days: frozenset[int]
     months: frozenset[int]
     weekdays: frozenset[int]  # 0 = Sunday
-    any_day: bool  # day-of-month was written as *
-    any_weekday: bool  # day-of-week was written as *
+    any_day: bool  # day-of-month starts with * (``*`` or ``*/n``)
+    any_weekday: bool  # day-of-week starts with * (``*`` or ``*/n``)
 
     def _day_matches(self, day: datetime) -> bool:
         if day.month not in self.months:
             return False
         by_date = day.day in self.days
         by_weekday = day.isoweekday() % 7 in self.weekdays
-        if self.any_day and self.any_weekday:
-            return True
-        if self.any_day:
-            return by_weekday
-        if self.any_weekday:
-            return by_date
+        # A field that starts with ``*`` may still narrow the days (``*/2``), so it is
+        # checked, not skipped. As in classic cron, the two fields are joined by "or"
+        # only when neither starts with ``*``.
+        if self.any_day or self.any_weekday:
+            return by_date and by_weekday
         return by_date or by_weekday
 
     def next_after(self, now: float) -> float:
